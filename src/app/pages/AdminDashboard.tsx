@@ -39,6 +39,33 @@ export default function AdminDashboard() {
     alert("Configuración SMTP guardada correctamente.");
   };
 
+  const sendEmail = async (recipient: string, subject: string, body: string) => {
+    if (!smtpSettings.host || !smtpSettings.user || !smtpSettings.password) {
+      console.warn("SMTP settings not configured correctly. Skipping email.");
+      return;
+    }
+    try {
+      const response = await fetch("http://localhost:3002/api/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          smtpSettings,
+          emailDetails: { recipient, subject, body }
+        })
+      });
+      const data = await response.json();
+      if (!data.success) {
+        console.error("Error sending email:", data.error);
+        alert(`Error al enviar correo: ${data.error}`);
+      } else {
+        console.log("Email sent successfully!");
+      }
+    } catch (err) {
+      console.error("Failed to connect to email engine:", err);
+      alert("No se pudo conectar con el motor de correos.");
+    }
+  };
+
   const [assignmentModal, setAssignmentModal] = useState<{
     isOpen: boolean;
     type: 'area' | 'dashboard';
@@ -102,7 +129,11 @@ export default function AdminDashboard() {
   const handleCreateUserWrapper = (userData: any) => {
     createUser(userData);
     if(smtpSettings.tplWelcome) {
-      alert(`[SIMULACIÓN CORREO]\nEnviando a ${userData.email}:\n\n${smtpSettings.tplWelcome.replace('{{name}}', userData.firstName).replace('{{email}}', userData.email).replace('{{password}}', userData.password)}`);
+      const body = smtpSettings.tplWelcome
+        .replace('{{name}}', userData.firstName)
+        .replace('{{email}}', userData.email)
+        .replace('{{password}}', userData.password);
+      sendEmail(userData.email, "Bienvenido a ATR Analytics", body);
     }
   };
 
@@ -113,14 +144,20 @@ export default function AdminDashboard() {
     if (assignmentModal.type === 'area') {
       assignUserToArea(userId, assignmentModal.areaId);
       if(smtpSettings.tplArea && user) {
-        alert(`[SIMULACIÓN CORREO]\nEnviando a ${user.email}:\n\n${smtpSettings.tplArea.replace('{{name}}', user.firstName).replace('{{area}}', AREA_NAMES[assignmentModal.areaId])}`);
+        const body = smtpSettings.tplArea
+          .replace('{{name}}', user.firstName)
+          .replace('{{area}}', AREA_NAMES[assignmentModal.areaId]);
+        sendEmail(user.email, "Nueva área asignada", body);
       }
     } else if (assignmentModal.type === 'dashboard' && assignmentModal.dashboardId) {
       assignUserToDashboard(userId, assignmentModal.areaId, assignmentModal.dashboardId);
       if(smtpSettings.tplDashboard && user) {
         const tpl = smtpSettings.tplDashboard || "";
-        const msg = `[SIMULACIÓN CORREO]\nEnviando a ${user.email}:\n\n${tpl.replace('{{name}}', user.firstName).replace('{{area}}', AREA_NAMES[assignmentModal.areaId]).replace('{{dashboard}}', assignmentModal.title)}`;
-        alert(msg);
+        const body = tpl
+          .replace('{{name}}', user.firstName)
+          .replace('{{area}}', AREA_NAMES[assignmentModal.areaId])
+          .replace('{{dashboard}}', assignmentModal.title);
+        sendEmail(user.email, "Nuevo dashboard asignado", body);
       }
     }
     setAssignmentModal({...assignmentModal, isOpen: false});
@@ -141,8 +178,8 @@ export default function AdminDashboard() {
       
       const user = getRegularUsers().find(u => u.id === userId);
       if(smtpSettings.tplPassword && user) {
-        const msg = `[SIMULACIÓN CORREO]\nEnviando a ${user.email}:\n\n${smtpSettings.tplPassword.replace('{{name}}', user.firstName)}`;
-        alert(msg);
+        const body = smtpSettings.tplPassword.replace('{{name}}', user.firstName);
+        sendEmail(user.email, "Restablecimiento de contraseña", body);
       }
       alert("Contraseña restablecida exitosamente.");
     }
