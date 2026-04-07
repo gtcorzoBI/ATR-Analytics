@@ -6,7 +6,8 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite",
-    "api": "node backend.js"
+    "api": "node backend.js",
+    "mail-engine": "python3 mail_engine.py"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",
