@@ -110,6 +110,29 @@ const notify = () => listeners.forEach(l => l());
 
 let internal_users: User[] = JSON.parse(localStorage.getItem("atr_users") || "null") || INITIAL_USERS;
 let internal_smtp: any = JSON.parse(localStorage.getItem("atr_smtp") || "{}");
+
+const API = "http://localhost:3001";
+
+// Fetch users from backend helper
+const fetchUsersFromBackend = async () => {
+  const token = localStorage.getItem("atr_token");
+  if (!token) return;
+  try {
+    const res = await fetch(`${API}/api/users`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && data.users) {
+        internal_users = data.users;
+        localStorage.setItem("atr_users", JSON.stringify(internal_users));
+        notify();
+      }
+    }
+  } catch (err) {
+    console.error("Could not fetch users from backend", err);
+  }
+};
 let internal_templates: any = JSON.parse(localStorage.getItem("atr_mail_templates") || "null") || {
   welcome: "Bienvenido a DataCanvas O.S.",
   area: "Se te ha asignado una nueva área.",
@@ -129,6 +152,9 @@ export const useDataStore = () => {
   useEffect(() => {
     listeners.push(forceUpdate);
     
+    // Fetch initial fresh data from DB on mount if possible
+    fetchUsersFromBackend();
+
     // Cross-tab sync: Listen for localStorage changes from other tabs
     const handleStorage = (e: StorageEvent) => {
       if (e.key && e.key.startsWith("atr_")) {
@@ -155,21 +181,89 @@ export const useDataStore = () => {
   return {
     // Auth & Users
     users: internal_users,
-    createUser: (u: User) => {
-      internal_users = [...internal_users, { ...u, id: Date.now().toString(), password: mockHash(u.password || '123456') }];
+    createUser: async (u: User) => {
+      // Optimistic update
+      const tempId = Date.now().toString();
+      const newUser = { ...u, id: tempId, password: mockHash(u.password || '123456') };
+      internal_users = [...internal_users, newUser];
       persist("atr_users", internal_users);
+
+      const token = localStorage.getItem("atr_token");
+      if (token) {
+        try {
+          await fetch(`${API}/api/users`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify(u)
+          });
+          // Refresh list to get actual ID and exact DB representation
+          fetchUsersFromBackend();
+        } catch (e) {
+          console.error("Failed to create user on backend", e);
+        }
+      }
     },
-    deleteUser: (id: string) => {
+    deleteUser: async (id: string) => {
+      // Optimistic update
       internal_users = internal_users.filter(u => u.id !== id);
       persist("atr_users", internal_users);
+
+      const token = localStorage.getItem("atr_token");
+      if (token) {
+        try {
+          await fetch(`${API}/api/users/${id}`, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${token}` }
+          });
+        } catch (e) {
+          console.error("Failed to delete user on backend", e);
+        }
+      }
     },
-    adminResetPassword: (id: string, pass: string) => {
+    adminResetPassword: async (id: string, pass: string) => {
+      // Optimistic update
       internal_users = internal_users.map(u => u.id === id ? { ...u, password: mockHash(pass), mustChangePassword: true } : u);
       persist("atr_users", internal_users);
+
+      const token = localStorage.getItem("atr_token");
+      if (token) {
+        try {
+          await fetch(`${API}/api/users/${id}/password`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify({ password: pass })
+          });
+        } catch (e) {
+          console.error("Failed to reset password on backend", e);
+        }
+      }
     },
-    updateUserAgencies: (id: string, agencies: string[]) => {
+    updateUserAgencies: async (id: string, agencies: string[]) => {
+      // Optimistic update
       internal_users = internal_users.map(u => u.id === id ? { ...u, agencies } : u);
       persist("atr_users", internal_users);
+
+      const token = localStorage.getItem("atr_token");
+      if (token) {
+        try {
+          await fetch(`${API}/api/users/${id}/agencies`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify({ agencies })
+          });
+        } catch (e) {
+          console.error("Failed to update agencies on backend", e);
+        }
+      }
     },
     getRegularUsers: () => internal_users.filter(u => u.role !== "admin"),
 

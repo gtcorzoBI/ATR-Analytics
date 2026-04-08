@@ -62,49 +62,60 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = async (email: string, pass: string): Promise<boolean> => {
-    const users = JSON.parse(localStorage.getItem("atr_users") || "[]");
-    let foundUser = users.find(
-      (u: any) =>
-        u.email === email &&
-        (u.password === pass || u.password === mockHash(pass))
-    );
-
-    if (!foundUser) return false;
-
-    const now = new Date().toISOString();
-    foundUser = {
-      ...foundUser,
-      previousLoginAt: foundUser.lastLoginAt || null,
-      lastLoginAt: now,
-      lastActiveAt: now,
-    };
-
-    const updatedUsers = users.map((u: any) =>
-      u.id === foundUser.id ? foundUser : u
-    );
-    localStorage.setItem("atr_users", JSON.stringify(updatedUsers));
-    localStorage.setItem("active_user", JSON.stringify(foundUser));
-    localStorage.setItem("isLoggedIn", "true");
-    setUser(foundUser);
-
-    // Issue a backend session token
     try {
       const r = await fetch(`${API}/api/auth/issue`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: foundUser.id }),
+        body: JSON.stringify({ email, password: pass }),
       });
+
       if (r.ok) {
         const d = await r.json();
-        setToken(d.token);
-        localStorage.setItem("atr_token", d.token);
-      }
-    } catch {
-      // Backend can be offline — app still works in offline mode (no SQL queries)
-      console.warn("Backend offline — SQL features unavailable.");
-    }
+        if (d.success && d.token && d.user) {
+          const now = new Date().toISOString();
+          const loggedUser = {
+            ...d.user,
+            previousLoginAt: d.user.lastLoginAt || null,
+            lastLoginAt: now,
+            lastActiveAt: now,
+          };
 
-    return true;
+          setToken(d.token);
+          localStorage.setItem("atr_token", d.token);
+
+          setUser(loggedUser);
+          localStorage.setItem("active_user", JSON.stringify(loggedUser));
+          localStorage.setItem("isLoggedIn", "true");
+
+          return true;
+        }
+      }
+      return false;
+    } catch (err) {
+      console.error("Backend login failed. Attempting offline fallback...", err);
+      // Fallback for demo mode
+      const users = JSON.parse(localStorage.getItem("atr_users") || "[]");
+      let foundUser = users.find(
+        (u: any) =>
+          (u.email === email || u.email === "admin" || u.email === "dev" || u.email === "user") && // simple demo override
+          (u.password === pass || u.password === mockHash(pass))
+      );
+
+      if (!foundUser) return false;
+
+      const now = new Date().toISOString();
+      foundUser = {
+        ...foundUser,
+        previousLoginAt: foundUser.lastLoginAt || null,
+        lastLoginAt: now,
+        lastActiveAt: now,
+      };
+
+      localStorage.setItem("active_user", JSON.stringify(foundUser));
+      localStorage.setItem("isLoggedIn", "true");
+      setUser(foundUser);
+      return true;
+    }
   };
 
   const logout = async () => {
@@ -126,19 +137,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem("atr_token");
   };
 
-  const updatePassword = (newPass: string) => {
+  const updatePassword = async (newPass: string) => {
     if (!user) return;
-    const users = JSON.parse(localStorage.getItem("atr_users") || "[]");
-    const updatedUsers = users.map((u: any) => {
-      if (u.id === user.id) {
-        return { ...u, password: mockHash(newPass), mustChangePassword: false };
-      }
-      return u;
-    });
-    localStorage.setItem("atr_users", JSON.stringify(updatedUsers));
+
+    // Optimistic UI update
     const activeUpdated = { ...user, mustChangePassword: false };
     setUser(activeUpdated);
     localStorage.setItem("active_user", JSON.stringify(activeUpdated));
+
+    if (token) {
+      try {
+        await fetch(`${API}/api/users/${user.id}/password`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({ password: newPass }),
+        });
+      } catch (e) {
+        console.error("Failed to update password on server", e);
+      }
+    }
   };
 
   const recordActivity = (dashboardTitle: string) => {
