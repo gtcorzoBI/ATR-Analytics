@@ -191,7 +191,7 @@ export const useDataStore = () => {
       const token = localStorage.getItem("atr_token");
       if (token) {
         try {
-          await fetch(`${API}/api/users`, {
+          const res = await fetch(`${API}/api/users`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -201,10 +201,15 @@ export const useDataStore = () => {
           });
           // Refresh list to get actual ID and exact DB representation
           fetchUsersFromBackend();
+          if (res.ok) {
+            const data = await res.json();
+            return data.user || newUser;
+          }
         } catch (e) {
           console.error("Failed to create user on backend", e);
         }
       }
+      return newUser;
     },
     deleteUser: async (id: string) => {
       // Optimistic update

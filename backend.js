@@ -101,6 +101,7 @@ initDatabase();
 
 // ── Token store (in-memory for local dev) ─────────────────────────────────
 const tokens = new Map(); // token → { userId, exp }
+const magicTokens = new Map(); // one-time magic link token → { userId, exp }
 
 // Middleware to validate token
 function requireToken(req, res, next) {
@@ -174,6 +175,68 @@ app.post('/api/auth/revoke', (req, res) => {
   const token = auth.replace('Bearer ', '').trim();
   tokens.delete(token);
   res.json({ success: true });
+});
+
+// Generate a one-time token for magic links (admin only conceptually, protected by requireToken)
+app.post('/api/auth/magic-token', requireToken, async (req, res) => {
+  const { userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'Missing userId' });
+
+  // Create a short-lived token (e.g., 24 hours)
+  const token = crypto.randomBytes(32).toString('hex');
+  magicTokens.set(token, {
+    userId,
+    exp: Date.now() + 24 * 60 * 60 * 1000 // 24 hours
+  });
+
+  res.json({ success: true, token });
+});
+
+// Consume a magic token to log in
+app.post('/api/auth/magic-login', async (req, res) => {
+  const { token } = req.body;
+  if (!token) return res.status(400).json({ error: 'Missing token' });
+
+  const magic = magicTokens.get(token);
+  if (!magic || Date.now() > magic.exp) {
+    if (magic) magicTokens.delete(token); // Cleanup if expired
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+
+  // Token is valid, single-use, so delete it
+  magicTokens.delete(token);
+
+  try {
+    // Get the user data to return
+    const result = await sysPool.request()
+      .input('id', sql.VarChar, magic.userId)
+      .query('SELECT * FROM Users WHERE id = @id');
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userRow = result.recordset[0];
+    const user = {
+      ...userRow,
+      agencies: userRow.agencies ? JSON.parse(userRow.agencies) : [],
+      permissions: userRow.permissions ? JSON.parse(userRow.permissions) : { areas: [], dashboards: [] },
+      mustChangePassword: userRow.mustChangePassword === 1 || userRow.mustChangePassword === true
+    };
+    delete user.password;
+
+    // Issue a normal session token
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+    tokens.set(sessionToken, {
+      userId: user.id,
+      exp: Date.now() + 8 * 60 * 60 * 1000  // 8 hours
+    });
+
+    res.json({ success: true, token: sessionToken, user });
+  } catch (err) {
+    console.error('[/api/auth/magic-login]', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── User CRUD Endpoints ───────────────────────────────────────────────────

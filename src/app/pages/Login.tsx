@@ -1,15 +1,31 @@
-import { useState } from "react";
-import { useNavigate } from "react-router";
+import { useState, useEffect, useRef } from "react";
+import { useNavigate, useSearchParams } from "react-router";
 import { Lock, User, BarChart3 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 
 export default function Login() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const magicLoginAttempted = useRef(false);
 
-  const { login } = useAuth();
+  const { login, magicLogin } = useAuth();
+
+  useEffect(() => {
+    const token = searchParams.get("token");
+    if (token && !magicLoginAttempted.current) {
+      magicLoginAttempted.current = true;
+      magicLogin(token).then((success) => {
+        if (success) {
+          navigate("/change-password");
+        } else {
+          setError("El enlace de inicio de sesión no es válido o ha expirado");
+        }
+      });
+    }
+  }, [searchParams, magicLogin, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

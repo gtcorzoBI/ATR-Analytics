@@ -4,6 +4,8 @@ import { AdminUserCreation, AGENCIES } from "../components/AdminUserCreation";
 import { useDataStore, INITIAL_AREAS, INITIAL_DASHBOARDS_MAP, AREA_NAMES } from "../hooks/useDataStore";
 import { ChevronDown, ChevronRight, MoreVertical, ShieldCheck, Shield, Trash2, KeyRound, Building2, Save, Mail, Eye, EyeOff, Archive, Trash } from "lucide-react";
 
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
+
 export default function AdminDashboard() {
   const { 
     createUser, 
@@ -126,10 +128,31 @@ export default function AdminDashboard() {
     });
   };
 
-  const handleCreateUserWrapper = (userData: any) => {
-    createUser(userData);
+  const handleCreateUserWrapper = async (userData: any) => {
+    const createdUser = await createUser(userData); // Adjust hook if necessary to return user or just use optimistic logic and fetch token
+
+    // Instead of directly calling, we first request a magic token
+    let magicTokenUrl = "";
+    try {
+      const token = localStorage.getItem("atr_token");
+      // Use createdUser id if returned, else use logic inside hook
+      const res = await fetch(`${API_BASE}/api/auth/magic-token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body: JSON.stringify({ userId: createdUser?.id || userData.email }) // Assuming backend uses id
+      });
+      if (res.ok) {
+        const d = await res.json();
+        if (d.success) {
+          const baseUrl = import.meta.env.VITE_APP_URL || window.location.origin;
+          magicTokenUrl = `${baseUrl}/login?token=${d.token}`;
+        }
+      }
+    } catch (e) { console.error("Error generating magic token", e); }
+
     if(smtpSettings.tplWelcome) {
-      const loginUrl = window.location.origin + '/login';
+      const baseUrl = import.meta.env.VITE_APP_URL || window.location.origin;
+      const loginUrl = magicTokenUrl || `${baseUrl}/login`;
       const body = smtpSettings.tplWelcome
         .replace(/{{name}}/g, userData.firstName)
         .replace(/{{email}}/g, userData.email)
@@ -172,15 +195,33 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleResetPassword = (userId: string, name: string) => {
+  const handleResetPassword = async (userId: string, name: string) => {
     const newPass = window.prompt(`Ingresa una nueva contraseña temporal para ${name}\nEl usuario deberá cambiarla en su siguiente inicio de sesión:`);
     if (newPass) {
       if (newPass.length < 6) return alert("La contraseña debe tener mínimo 6 caracteres.");
       adminResetPassword(userId, newPass);
       
+      let magicTokenUrl = "";
+      try {
+        const token = localStorage.getItem("atr_token");
+        const res = await fetch(`${API_BASE}/api/auth/magic-token`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+          body: JSON.stringify({ userId: userId })
+        });
+        if (res.ok) {
+          const d = await res.json();
+          if (d.success) {
+            const baseUrl = import.meta.env.VITE_APP_URL || window.location.origin;
+            magicTokenUrl = `${baseUrl}/login?token=${d.token}`;
+          }
+        }
+      } catch (e) { console.error("Error generating magic token", e); }
+
       const user = getRegularUsers().find(u => u.id === userId);
       if(smtpSettings.tplPassword && user) {
-        const loginUrl = window.location.origin + '/login';
+        const baseUrl = import.meta.env.VITE_APP_URL || window.location.origin;
+        const loginUrl = magicTokenUrl || `${baseUrl}/login`;
         const body = smtpSettings.tplPassword
           .replace(/{{name}}/g, user.firstName)
           .replace(/{{password}}/g, newPass)
