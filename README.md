@@ -47,6 +47,15 @@ El backend expone endpoints en el puerto `3001` (por defecto) para manejar sesio
 npm run api
 ```
 
+### Configuración de la Base de Datos (MSSQL)
+
+Para la conexión a la base de datos SQL Server (que corre en la misma PC que la app), los datos de acceso por defecto son:
+
+- **Host/IP**: `10.10.10.30` (Nota: Si la IP es rotativa, también puedes intentar conectarte mediante `localhost` u otro nombre de host local).
+- **Database**: `ATRAnalytics`
+- **User**: `adminATR`
+- **Password**: `123456789`
+
 ### Compilar para Producción
 
 Para compilar el frontend listo para un entorno de producción:
