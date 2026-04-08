@@ -87,9 +87,9 @@ export default function DevDashboard() {
   };
 
   // ── Connections ───────────────────────────────────────────────────────
-  const [connections, setConnections] = useState<Connection[]>(() =>
-    JSON.parse(localStorage.getItem("atr_connections") || "[]")
-  );
+  const { dataSources, saveDevSource, saveDevCanvas, saveDevMeasure, deleteDevSource } = useDataStore(); // Assuming dataSources mapped here, adjust if store exposes it differently
+  // Dev sources act as connections here
+  const connections: Connection[] = dataSources as Connection[];
   const [showAddConn, setShowAddConn] = useState(false);
   const [connForm, setConnForm] = useState({ name: "", host: "localhost", database: "", username: "sa", password: "" });
   const [connTesting, setConnTesting] = useState(false);
@@ -111,13 +111,10 @@ export default function DevDashboard() {
   const [renderCounter, setRenderCounter] = useState(0);
 
   // ── Saved Components & Dashboard ─────────────────────────────────────
-  const [savedComponents, setSavedComponents] = useState<any[]>(() =>
-    JSON.parse(localStorage.getItem("atr_saved_components") || "[]")
-  );
+  const { devMeasures = [], devCanvas = [] } = useDataStore() as any; // Using dev assets from store
+  const savedComponents = devMeasures;
+  const dashItems = devCanvas;
   const [showDashboard, setShowDashboard] = useState(false);
-  const [dashItems, setDashItems] = useState<any[]>(() =>
-    JSON.parse(localStorage.getItem("atr_dashboard_items") || "[]")
-  );
 
   // ── Tutorial ──────────────────────────────────────────────────────────
   const [showTutorial, setShowTutorial] = useState(false);
@@ -153,13 +150,13 @@ export default function DevDashboard() {
     // Force complete reset for NEW projects
     setTabs([]);
     setActiveTabId(null);
-    setDashItems([]);
-    setSavedComponents([]);
-    setActiveVisualType(null);
-    setVisualMapping({ xAxis: '', yAxis: '', rows: [], cols: [], values: [], legend: '' });
-    setConnections([]); // Clear connections as requested
-    localStorage.removeItem("atr_connections"); // Persist the clear
-    setViewMode('main');
+    // In a real DB scenario, we might not want to instantly delete all DB records here just by clicking "Start Create",
+    // but to preserve the exact UI functionality without modifying store deeply:
+    if (window.confirm("¿Seguro que deseas empezar de cero? Esto limpiará la sesión actual.")) {
+       setActiveVisualType(null);
+       setVisualMapping({ xAxis: '', yAxis: '', rows: [], cols: [], values: [], legend: '' });
+       setViewMode('main');
+    }
   };
 
   const startBasico = () => {
@@ -196,13 +193,14 @@ export default function DevDashboard() {
         rows: c.rows || [],
         columns: c.columns || []
       }));
-      setSavedComponents(comps);
+      comps.forEach((c:any) => saveDevMeasure(c));
       
       // Load into canvas
-      setDashItems(dash.config.components.map((c: any) => ({
+      const items = dash.config.components.map((c: any) => ({
         ...c,
         instanceId: `inst-${Date.now()}-${Math.random()}`
-      })));
+      }));
+      saveDevCanvas(items);
     }
     
     setSecurityGate({ ...securityGate, isOpen: false });
@@ -345,18 +343,14 @@ export default function DevDashboard() {
   const saveConn = () => {
     if (!connForm.name || !connForm.host || !connForm.database) return;
     const c = { ...connForm, id: `conn-${Date.now()}` };
-    const updated = [...connections, c];
-    setConnections(updated);
-    localStorage.setItem("atr_connections", JSON.stringify(updated));
+    saveDevSource(c);
     setConnForm({ name: "", host: "localhost", database: "", username: "sa", password: "" });
     setConnTestMsg(null);
     setShowAddConn(false);
   };
 
   const deleteConn = (id: string) => {
-    const updated = connections.filter(c => c.id !== id);
-    setConnections(updated);
-    localStorage.setItem("atr_connections", JSON.stringify(updated));
+    deleteDevSource(id);
     setTablesMap(prev => { const n = { ...prev }; delete n[id]; return n; });
     if (expandedConn === id) setExpandedConn(null);
   };
@@ -426,31 +420,27 @@ export default function DevDashboard() {
   // ─────────────────────────────────────────────────────────────────────
   // Save component / Dashboard
   // ─────────────────────────────────────────────────────────────────────
+  const { deleteDevMeasure } = useDataStore() as any;
+
   const saveComponent = (tab: DataTab) => {
     const name = prompt("Nombre del componente:", tab.title);
     if (!name) return;
     const comp = { id: `comp-${Date.now()}`, name, code: tab.code, rows: tab.rows, columns: tab.columns };
-    const updated = [...savedComponents, comp];
-    setSavedComponents(updated);
-    localStorage.setItem("atr_saved_components", JSON.stringify(updated));
+    saveDevMeasure(comp);
   };
 
   const addToDashboard = (comp: any) => {
     const updated = [...dashItems, { ...comp, instanceId: `inst-${Date.now()}` }];
-    setDashItems(updated);
-    localStorage.setItem("atr_dashboard_items", JSON.stringify(updated));
+    saveDevCanvas(updated);
   };
 
   const removeFromDashboard = (iid: string) => {
     const updated = dashItems.filter((d: any) => d.instanceId !== iid);
-    setDashItems(updated);
-    localStorage.setItem("atr_dashboard_items", JSON.stringify(updated));
+    saveDevCanvas(updated);
   };
 
   const deleteSavedComponent = (id: string) => {
-    const updated = savedComponents.filter((c: any) => c.id !== id);
-    setSavedComponents(updated);
-    localStorage.setItem("atr_saved_components", JSON.stringify(updated));
+    deleteDevMeasure(id);
   };
 
 
@@ -717,7 +707,7 @@ export default function DevDashboard() {
           <button
             onClick={() => {
               if (dashItems.length > 0 && !window.confirm("¿Deseas limpiar el lienzo actual para crear uno nuevo?")) return;
-              setDashItems([]);
+              saveDevCanvas([]);
               setShowDashboard(true);
             }}
             className="flex items-center gap-1.5 text-[10px] uppercase font-black bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 px-2.5 py-1.5 rounded transition border border-emerald-600/30 shadow-lg shadow-emerald-900/20"

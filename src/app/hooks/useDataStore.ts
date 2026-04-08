@@ -113,26 +113,20 @@ let internal_smtp: any = JSON.parse(localStorage.getItem("atr_smtp") || "{}");
 
 const API = "http://localhost:3001";
 
-// Fetch users from backend helper
-const fetchUsersFromBackend = async () => {
+// Helper: generic fetch and parse
+const fetchFromBackend = async (endpoint: string) => {
   const token = localStorage.getItem("atr_token");
-  if (!token) return;
+  if (!token) return null;
   try {
-    const res = await fetch(`${API}/api/users`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
+    const res = await fetch(`${API}${endpoint}`, { headers: { Authorization: `Bearer ${token}` } });
     if (res.ok) {
       const data = await res.json();
-      if (data.success && data.users) {
-        internal_users = data.users;
-        localStorage.setItem("atr_users", JSON.stringify(internal_users));
-        notify();
-      }
+      if (data.success) return data;
     }
-  } catch (err) {
-    console.error("Could not fetch users from backend", err);
-  }
+  } catch (err) { console.error(`Could not fetch ${endpoint}`, err); }
+  return null;
 };
+
 let internal_templates: any = JSON.parse(localStorage.getItem("atr_mail_templates") || "null") || {
   welcome: "Bienvenido a DataCanvas O.S.",
   area: "Se te ha asignado una nueva área.",
@@ -145,6 +139,47 @@ let internal_canvas: any[] = JSON.parse(localStorage.getItem("atr_dev_canvas") |
 let internal_published: any[] = JSON.parse(localStorage.getItem("atr_published_dashboards") || "[]");
 let internal_system: Record<string, any[]> = JSON.parse(localStorage.getItem("atr_system_dashboards") || "null") || INITIAL_DASHBOARDS_MAP;
 
+// Fetch all data from backend helper
+const fetchAllDataFromBackend = async () => {
+  const usersData = await fetchFromBackend('/api/users');
+  if (usersData && usersData.users) {
+    internal_users = usersData.users;
+    localStorage.setItem("atr_users", JSON.stringify(internal_users));
+  }
+
+  const devAssets = await fetchFromBackend('/api/dev/assets');
+  if (devAssets) {
+    internal_sources = devAssets.sources || [];
+    internal_measures = devAssets.measures || [];
+    internal_canvas = devAssets.canvas || [];
+    internal_published = devAssets.publishedDashboards || [];
+
+    // Merge DB system dashboards with defaults (DB takes precedence or overwrites completely if populated)
+    if (Object.keys(devAssets.systemDashboards || {}).length > 0) {
+      internal_system = devAssets.systemDashboards;
+    }
+
+    localStorage.setItem("atr_dev_sources", JSON.stringify(internal_sources));
+    localStorage.setItem("atr_dev_measures", JSON.stringify(internal_measures));
+    localStorage.setItem("atr_dev_canvas", JSON.stringify(internal_canvas));
+    localStorage.setItem("atr_published_dashboards", JSON.stringify(internal_published));
+    localStorage.setItem("atr_system_dashboards", JSON.stringify(internal_system));
+  }
+  notify();
+};
+
+const persistBackend = async (endpoint: string, method: string, body?: any) => {
+  const token = localStorage.getItem("atr_token");
+  if (!token) return;
+  try {
+    await fetch(`${API}${endpoint}`, {
+      method,
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: body ? JSON.stringify(body) : undefined
+    });
+  } catch (err) { console.error(`Error syncing ${endpoint}`, err); }
+};
+
 export const useDataStore = () => {
   const [, setTick] = useState(0);
   const forceUpdate = () => setTick(t => t + 1);
@@ -153,7 +188,7 @@ export const useDataStore = () => {
     listeners.push(forceUpdate);
     
     // Fetch initial fresh data from DB on mount if possible
-    fetchUsersFromBackend();
+    fetchAllDataFromBackend();
 
     // Cross-tab sync: Listen for localStorage changes from other tabs
     const handleStorage = (e: StorageEvent) => {
@@ -200,7 +235,7 @@ export const useDataStore = () => {
             body: JSON.stringify(u)
           });
           // Refresh list to get actual ID and exact DB representation
-          fetchUsersFromBackend();
+          fetchAllDataFromBackend();
         } catch (e) {
           console.error("Failed to create user on backend", e);
         }
@@ -277,42 +312,85 @@ export const useDataStore = () => {
 
     // Dev
     dataSources: internal_sources,
+    devMeasures: internal_measures,
+    devCanvas: internal_canvas,
     saveDevSource: (s: any) => {
-      internal_sources = [...internal_sources, s];
+      const src = { ...s, id: s.id || `src-${Date.now()}` };
+      internal_sources = [...internal_sources, src];
       persist("atr_dev_sources", internal_sources);
+      persistBackend('/api/dev/sources', 'POST', src);
+    },
+    saveDevMeasure: (m: any) => {
+      const measure = { ...m, id: m.id || `msr-${Date.now()}` };
+      internal_measures = [...internal_measures, measure];
+      persist("atr_dev_measures", internal_measures);
+      persistBackend('/api/dev/measures', 'POST', measure);
+    },
+    deleteDevSource: (id: string) => {
+      internal_sources = internal_sources.filter((s: any) => s.id !== id);
+      persist("atr_dev_sources", internal_sources);
+      persistBackend(`/api/dev/sources/${id}`, 'DELETE');
+    },
+    deleteDevMeasure: (id: string) => {
+      internal_measures = internal_measures.filter((m: any) => m.id !== id);
+      persist("atr_dev_measures", internal_measures);
+      persistBackend(`/api/dev/measures/${id}`, 'DELETE');
+    },
+    saveDevCanvas: (items: any[]) => {
+      // The canvas is the entire array of items currently on the board
+      internal_canvas = items;
+      persist("atr_dev_canvas", internal_canvas);
+      persistBackend('/api/dev/canvas', 'POST', { id: 'active_canvas', items });
     },
     publishedDashboards: internal_published,
     publishDashboard: (d: any) => {
-      internal_published = [...internal_published, { ...d, id: `pub-${Date.now()}` }];
+      const published = { ...d, id: d.id || `pub-${Date.now()}` };
+      internal_published = [...internal_published, published];
       persist("atr_published_dashboards", internal_published);
+      persistBackend('/api/dev/published', 'POST', published);
     },
     deletePublishedDashboard: (id: string) => {
       internal_published = internal_published.filter(p => p.id !== id);
       persist("atr_published_dashboards", internal_published);
+      persistBackend(`/api/dev/published/${id}`, 'DELETE');
     },
     systemDashboards: internal_system,
     approveDashboard: (pubId: string, areaId: string) => {
       const dash = internal_published.find(d => d.id === pubId);
       if (!dash) return;
       const newDash = { id: `dash-${Date.now()}`, title: dash.name, category: AREA_NAMES[areaId], config: dash };
+
       internal_system = { ...internal_system, [areaId]: [...(internal_system[areaId] || []), newDash] };
       internal_published = internal_published.filter(p => p.id !== pubId);
+
       persist("atr_system_dashboards", internal_system);
       persist("atr_published_dashboards", internal_published);
+
+      persistBackend('/api/dev/system', 'POST', { areaId, dashId: newDash.id, dashboard: newDash });
+      persistBackend(`/api/dev/published/${pubId}`, 'DELETE');
     },
     
     // Advanced Management
     hideDashboard: (areaId: string, dashId: string) => {
-      internal_system = { ...internal_system, [areaId]: (internal_system[areaId] || []).map(d => d.id === dashId ? { ...d, hidden: !d.hidden } : d) };
+      const updatedList = (internal_system[areaId] || []).map(d => d.id === dashId ? { ...d, hidden: !d.hidden } : d);
+      internal_system = { ...internal_system, [areaId]: updatedList };
       persist("atr_system_dashboards", internal_system);
+
+      const dashboard = updatedList.find(d => d.id === dashId);
+      if (dashboard) persistBackend('/api/dev/system', 'POST', { areaId, dashId, dashboard });
     },
     archiveDashboard: (areaId: string, dashId: string) => {
-      internal_system = { ...internal_system, [areaId]: (internal_system[areaId] || []).map(d => d.id === dashId ? { ...d, archived: true } : d) };
+      const updatedList = (internal_system[areaId] || []).map(d => d.id === dashId ? { ...d, archived: true } : d);
+      internal_system = { ...internal_system, [areaId]: updatedList };
       persist("atr_system_dashboards", internal_system);
+
+      const dashboard = updatedList.find(d => d.id === dashId);
+      if (dashboard) persistBackend('/api/dev/system', 'POST', { areaId, dashId, dashboard });
     },
     deleteSystemDashboard: (areaId: string, dashId: string) => {
       internal_system = { ...internal_system, [areaId]: (internal_system[areaId] || []).filter(d => d.id !== dashId) };
       persist("atr_system_dashboards", internal_system);
+      persistBackend(`/api/dev/system/${areaId}/${dashId}`, 'DELETE');
     },
 
     // Permissions

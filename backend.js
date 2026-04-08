@@ -52,6 +52,24 @@ async function initDatabase() {
       )
     `);
 
+    // Create Dev Assets tables
+    await sysPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='DevSources' and xtype='U')
+      CREATE TABLE DevSources ( id VARCHAR(100) PRIMARY KEY, data NVARCHAR(MAX) )
+
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='DevMeasures' and xtype='U')
+      CREATE TABLE DevMeasures ( id VARCHAR(100) PRIMARY KEY, data NVARCHAR(MAX) )
+
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='DevCanvas' and xtype='U')
+      CREATE TABLE DevCanvas ( id VARCHAR(100) PRIMARY KEY, data NVARCHAR(MAX) )
+
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='PublishedDashboards' and xtype='U')
+      CREATE TABLE PublishedDashboards ( id VARCHAR(100) PRIMARY KEY, data NVARCHAR(MAX) )
+
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='SystemDashboards' and xtype='U')
+      CREATE TABLE SystemDashboards ( areaId VARCHAR(100), dashId VARCHAR(100), data NVARCHAR(MAX), PRIMARY KEY (areaId, dashId) )
+    `);
+
     // Insert default Admin user if table is empty
     const { recordset } = await sysPool.request().query('SELECT COUNT(*) as cnt FROM Users');
     if (recordset[0].cnt === 0) {
@@ -109,20 +127,26 @@ function requireToken(req, res, next) {
   next();
 }
 
+// Middleware to validate admin role
+async function requireAdmin(req, res, next) {
+  try {
+    const result = await sysPool.request()
+      .input('id', sql.VarChar, req.session.userId)
+      .query('SELECT role FROM Users WHERE id = @id');
+    const user = result.recordset[0];
+    if (!user || user.role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden - admin access required' });
+    }
+    next();
+  } catch (err) {
+    res.status(500).json({ error: 'Database error verifying permissions' });
+  }
+}
+
 // POST /api/auth/issue  →  issue a token for a logged-in user
 // Validates credentials against the global Users table
 app.post('/api/auth/issue', async (req, res) => {
-  const { email, password, userId } = req.body; // userId for fallback token re-issue
-
-  if (userId && !email && !password) {
-    // Fallback re-issue route (if token expired but user still stored in frontend localStorage)
-    const token = crypto.randomBytes(32).toString('hex');
-    tokens.set(token, {
-      userId,
-      exp: Date.now() + 8 * 60 * 60 * 1000  // 8 hours
-    });
-    return res.json({ success: true, token });
-  }
+  const { email, password } = req.body;
 
   if (!email || !password) return res.status(400).json({ error: 'Missing credentials' });
 
@@ -169,7 +193,7 @@ app.post('/api/auth/revoke', (req, res) => {
 // ── User CRUD Endpoints ───────────────────────────────────────────────────
 
 // GET /api/users
-app.get('/api/users', requireToken, async (req, res) => {
+app.get('/api/users', requireToken, requireAdmin, async (req, res) => {
   try {
     const result = await sysPool.request().query('SELECT * FROM Users');
     const users = result.recordset.map(u => ({
@@ -185,7 +209,7 @@ app.get('/api/users', requireToken, async (req, res) => {
 });
 
 // POST /api/users
-app.post('/api/users', requireToken, async (req, res) => {
+app.post('/api/users', requireToken, requireAdmin, async (req, res) => {
   const { firstName, lastName, email, role, password, agencies, permissions } = req.body;
   const newId = Date.now().toString();
   try {
@@ -210,7 +234,7 @@ app.post('/api/users', requireToken, async (req, res) => {
 });
 
 // DELETE /api/users/:id
-app.delete('/api/users/:id', requireToken, async (req, res) => {
+app.delete('/api/users/:id', requireToken, requireAdmin, async (req, res) => {
   try {
     await sysPool.request()
       .input('id', sql.VarChar, req.params.id)
@@ -223,7 +247,7 @@ app.delete('/api/users/:id', requireToken, async (req, res) => {
 });
 
 // PUT /api/users/:id/agencies
-app.put('/api/users/:id/agencies', requireToken, async (req, res) => {
+app.put('/api/users/:id/agencies', requireToken, requireAdmin, async (req, res) => {
   const { agencies } = req.body;
   try {
     await sysPool.request()
@@ -238,7 +262,7 @@ app.put('/api/users/:id/agencies', requireToken, async (req, res) => {
 });
 
 // PUT /api/users/:id/password
-app.put('/api/users/:id/password', requireToken, async (req, res) => {
+app.put('/api/users/:id/password', requireToken, requireAdmin, async (req, res) => {
   const { password } = req.body;
   try {
     await sysPool.request()
@@ -250,6 +274,158 @@ app.put('/api/users/:id/password', requireToken, async (req, res) => {
     console.error('[/api/users/password PUT]', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── Dev Assets Endpoints ──────────────────────────────────────────────────
+
+app.get('/api/dev/assets', requireToken, async (req, res) => {
+  try {
+    const sources = await sysPool.request().query('SELECT * FROM DevSources');
+    const measures = await sysPool.request().query('SELECT * FROM DevMeasures');
+    const published = await sysPool.request().query('SELECT * FROM PublishedDashboards');
+    const system = await sysPool.request().query('SELECT * FROM SystemDashboards');
+
+    const canvas = await sysPool.request()
+      .input('id', sql.VarChar, `canvas_user_${req.session.userId}`)
+      .query('SELECT data FROM DevCanvas WHERE id = @id');
+
+    // Group system dashboards by areaId
+    const sysMap = {};
+    for (const row of system.recordset) {
+      if (!sysMap[row.areaId]) sysMap[row.areaId] = [];
+      sysMap[row.areaId].push(JSON.parse(row.data));
+    }
+
+    // DevCanvas stores a single object { id: '...', items: [...] } per user
+    const canvasData = canvas.recordset.length > 0 ? JSON.parse(canvas.recordset[0].data).items : [];
+
+    res.json({
+      success: true,
+      sources: sources.recordset.map(r => JSON.parse(r.data)),
+      measures: measures.recordset.map(r => JSON.parse(r.data)),
+      canvas: canvasData,
+      publishedDashboards: published.recordset.map(r => JSON.parse(r.data)),
+      systemDashboards: sysMap
+    });
+  } catch (err) {
+    console.error('[/api/dev/assets GET]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/dev/sources', requireToken, async (req, res) => {
+  try {
+    await sysPool.request()
+      .input('id', sql.VarChar, req.body.id)
+      .input('data', sql.NVarChar, JSON.stringify(req.body))
+      .query(`
+        IF EXISTS (SELECT * FROM DevSources WHERE id = @id)
+          UPDATE DevSources SET data = @data WHERE id = @id
+        ELSE
+          INSERT INTO DevSources (id, data) VALUES (@id, @data)
+      `);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/dev/measures', requireToken, async (req, res) => {
+  try {
+    await sysPool.request()
+      .input('id', sql.VarChar, req.body.id)
+      .input('data', sql.NVarChar, JSON.stringify(req.body))
+      .query(`
+        IF EXISTS (SELECT * FROM DevMeasures WHERE id = @id)
+          UPDATE DevMeasures SET data = @data WHERE id = @id
+        ELSE
+          INSERT INTO DevMeasures (id, data) VALUES (@id, @data)
+      `);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/dev/sources/:id', requireToken, async (req, res) => {
+  try {
+    await sysPool.request()
+      .input('id', sql.VarChar, req.params.id)
+      .query('DELETE FROM DevSources WHERE id = @id');
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/dev/measures/:id', requireToken, async (req, res) => {
+  try {
+    await sysPool.request()
+      .input('id', sql.VarChar, req.params.id)
+      .query('DELETE FROM DevMeasures WHERE id = @id');
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/dev/canvas', requireToken, async (req, res) => {
+  const canvasId = `canvas_user_${req.session.userId}`;
+  try {
+    await sysPool.request()
+      .input('id', sql.VarChar, canvasId)
+      .input('data', sql.NVarChar, JSON.stringify(req.body))
+      .query(`
+        IF EXISTS (SELECT * FROM DevCanvas WHERE id = @id)
+          UPDATE DevCanvas SET data = @data WHERE id = @id
+        ELSE
+          INSERT INTO DevCanvas (id, data) VALUES (@id, @data)
+      `);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/dev/published', requireToken, async (req, res) => {
+  try {
+    await sysPool.request()
+      .input('id', sql.VarChar, req.body.id)
+      .input('data', sql.NVarChar, JSON.stringify(req.body))
+      .query(`
+        IF EXISTS (SELECT * FROM PublishedDashboards WHERE id = @id)
+          UPDATE PublishedDashboards SET data = @data WHERE id = @id
+        ELSE
+          INSERT INTO PublishedDashboards (id, data) VALUES (@id, @data)
+      `);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/dev/published/:id', requireToken, async (req, res) => {
+  try {
+    await sysPool.request()
+      .input('id', sql.VarChar, req.params.id)
+      .query('DELETE FROM PublishedDashboards WHERE id = @id');
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/dev/system', requireToken, async (req, res) => {
+  const { areaId, dashId, dashboard } = req.body;
+  try {
+    await sysPool.request()
+      .input('areaId', sql.VarChar, areaId)
+      .input('dashId', sql.VarChar, dashId)
+      .input('data', sql.NVarChar, JSON.stringify(dashboard))
+      .query(`
+        IF EXISTS (SELECT * FROM SystemDashboards WHERE areaId = @areaId AND dashId = @dashId)
+          UPDATE SystemDashboards SET data = @data WHERE areaId = @areaId AND dashId = @dashId
+        ELSE
+          INSERT INTO SystemDashboards (areaId, dashId, data) VALUES (@areaId, @dashId, @data)
+      `);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/dev/system/:areaId/:dashId', requireToken, async (req, res) => {
+  try {
+    await sysPool.request()
+      .input('areaId', sql.VarChar, req.params.areaId)
+      .input('dashId', sql.VarChar, req.params.dashId)
+      .query('DELETE FROM SystemDashboards WHERE areaId = @areaId AND dashId = @dashId');
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // Helper: build a fresh mssql connection (no pool reuse)

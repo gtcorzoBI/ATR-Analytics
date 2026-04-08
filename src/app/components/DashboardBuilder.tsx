@@ -33,15 +33,12 @@ export default function DashboardBuilder({ components, dark, onClose }: Dashboar
   const muted = dark ? "#8b949e" : "#94a3b8";
 
   // ── Canvas items ────────────────────────────────────────────────────────
-  const [items, setItems] = useState<DashItem[]>(() => {
-    const saved = localStorage.getItem("atr_dashboard_items");
-    return saved ? JSON.parse(saved) : [];
-  });
+  const { devCanvas = [], saveDevCanvas } = useDataStore() as any;
+  const items: DashItem[] = devCanvas;
 
   const save = useCallback((updated: DashItem[]) => {
-    setItems(updated);
-    localStorage.setItem("atr_dashboard_items", JSON.stringify(updated));
-  }, []);
+    saveDevCanvas(updated);
+  }, [saveDevCanvas]);
 
   const addToCanvas = (comp: SavedComponent) => {
     const inst: DashItem = {
@@ -93,9 +90,9 @@ export default function DashboardBuilder({ components, dark, onClose }: Dashboar
     if (activeId) {
       setActiveId(null);
       setIsResizing(false);
-      localStorage.setItem("atr_dashboard_items", JSON.stringify(items));
+      save(items); // Force save on mouseup since resize events skip persistence for performance
     }
-  }, [activeId, items]);
+  }, [activeId, items, save]);
 
   useEffect(() => {
     if (activeId) {
