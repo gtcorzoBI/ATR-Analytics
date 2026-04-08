@@ -48,8 +48,17 @@ async function initDatabase() {
         role VARCHAR(50),
         password VARCHAR(255),
         agencies NVARCHAR(MAX),
-        permissions NVARCHAR(MAX)
+        permissions NVARCHAR(MAX),
+        mustChangePassword BIT DEFAULT 1
       )
+    `);
+
+    // Ensure mustChangePassword column exists for existing setups
+    await sysPool.request().query(`
+      IF COL_LENGTH('Users', 'mustChangePassword') IS NULL
+      BEGIN
+        ALTER TABLE Users ADD mustChangePassword BIT DEFAULT 1
+      END
     `);
 
     // Insert default Admin user if table is empty
@@ -147,7 +156,8 @@ app.post('/api/auth/issue', async (req, res) => {
     const userData = {
       ...user,
       agencies: user.agencies ? JSON.parse(user.agencies) : [],
-      permissions: user.permissions ? JSON.parse(user.permissions) : { areas: [], dashboards: [] }
+      permissions: user.permissions ? JSON.parse(user.permissions) : { areas: [], dashboards: [] },
+      mustChangePassword: user.mustChangePassword === 1 || user.mustChangePassword === true
     };
 
     // Update lastLoginAt etc could be done here if the table had those columns
@@ -175,7 +185,8 @@ app.get('/api/users', requireToken, async (req, res) => {
     const users = result.recordset.map(u => ({
       ...u,
       agencies: u.agencies ? JSON.parse(u.agencies) : [],
-      permissions: u.permissions ? JSON.parse(u.permissions) : { areas: [], dashboards: [] }
+      permissions: u.permissions ? JSON.parse(u.permissions) : { areas: [], dashboards: [] },
+      mustChangePassword: u.mustChangePassword === 1 || u.mustChangePassword === true
     }));
     res.json({ success: true, users });
   } catch (err) {
@@ -198,11 +209,12 @@ app.post('/api/users', requireToken, async (req, res) => {
       .input('pass', sql.VarChar, mockHash(password || '123456'))
       .input('ag', sql.NVarChar, JSON.stringify(agencies || []))
       .input('perm', sql.NVarChar, JSON.stringify(permissions || { areas: [], dashboards: [] }))
+      .input('mustChange', sql.Bit, 1)
       .query(`
-        INSERT INTO Users (id, firstName, lastName, email, role, password, agencies, permissions)
-        VALUES (@id, @fn, @ln, @email, @role, @pass, @ag, @perm)
+        INSERT INTO Users (id, firstName, lastName, email, role, password, agencies, permissions, mustChangePassword)
+        VALUES (@id, @fn, @ln, @email, @role, @pass, @ag, @perm, @mustChange)
       `);
-    res.json({ success: true, user: { id: newId, firstName, lastName, email, role, agencies, permissions } });
+    res.json({ success: true, user: { id: newId, firstName, lastName, email, role, agencies, permissions, mustChangePassword: true } });
   } catch (err) {
     console.error('[/api/users POST]', err.message);
     res.status(500).json({ error: err.message });
@@ -239,12 +251,17 @@ app.put('/api/users/:id/agencies', requireToken, async (req, res) => {
 
 // PUT /api/users/:id/password
 app.put('/api/users/:id/password', requireToken, async (req, res) => {
-  const { password } = req.body;
+  const { password, mustChangePassword } = req.body;
   try {
+    let queryStr = 'UPDATE Users SET password = @pass, mustChangePassword = 0 WHERE id = @id';
+    if (mustChangePassword === true) {
+      queryStr = 'UPDATE Users SET password = @pass, mustChangePassword = 1 WHERE id = @id';
+    }
+
     await sysPool.request()
       .input('id', sql.VarChar, req.params.id)
       .input('pass', sql.VarChar, mockHash(password))
-      .query('UPDATE Users SET password = @pass WHERE id = @id');
+      .query(queryStr);
     res.json({ success: true });
   } catch (err) {
     console.error('[/api/users/password PUT]', err.message);

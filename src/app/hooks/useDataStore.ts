@@ -184,7 +184,7 @@ export const useDataStore = () => {
     createUser: async (u: User) => {
       // Optimistic update
       const tempId = Date.now().toString();
-      const newUser = { ...u, id: tempId, password: mockHash(u.password || '123456') };
+      const newUser = { ...u, id: tempId, password: mockHash(u.password || '123456'), mustChangePassword: true };
       internal_users = [...internal_users, newUser];
       persist("atr_users", internal_users);
 
@@ -237,7 +237,7 @@ export const useDataStore = () => {
               "Content-Type": "application/json",
               Authorization: `Bearer ${token}`
             },
-            body: JSON.stringify({ password: pass })
+            body: JSON.stringify({ password: pass, mustChangePassword: true })
           });
         } catch (e) {
           console.error("Failed to reset password on backend", e);

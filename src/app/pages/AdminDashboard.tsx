@@ -129,10 +129,12 @@ export default function AdminDashboard() {
   const handleCreateUserWrapper = (userData: any) => {
     createUser(userData);
     if(smtpSettings.tplWelcome) {
+      const loginUrl = window.location.origin + '/login';
       const body = smtpSettings.tplWelcome
-        .replace('{{name}}', userData.firstName)
-        .replace('{{email}}', userData.email)
-        .replace('{{password}}', userData.password);
+        .replace(/{{name}}/g, userData.firstName)
+        .replace(/{{email}}/g, userData.email)
+        .replace(/{{password}}/g, userData.password)
+        .replace(/{{url}}/g, loginUrl);
       sendEmail(userData.email, "Bienvenido a ATR Analytics", body);
     }
   };
@@ -178,7 +180,11 @@ export default function AdminDashboard() {
       
       const user = getRegularUsers().find(u => u.id === userId);
       if(smtpSettings.tplPassword && user) {
-        const body = smtpSettings.tplPassword.replace('{{name}}', user.firstName);
+        const loginUrl = window.location.origin + '/login';
+        const body = smtpSettings.tplPassword
+          .replace(/{{name}}/g, user.firstName)
+          .replace(/{{password}}/g, newPass)
+          .replace(/{{url}}/g, loginUrl);
         sendEmail(user.email, "Restablecimiento de contraseña", body);
       }
       alert("Contraseña restablecida exitosamente.");
@@ -716,7 +722,7 @@ export default function AdminDashboard() {
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-[#E85D5D] focus:border-[#E85D5D]"
                     placeholder="Escribe el mensaje..."
                   />
-                  <p className="text-xs text-gray-500 mt-1">Variables: <code className="bg-gray-100 px-1 rounded">{'{{name}}'}</code>, <code className="bg-gray-100 px-1 rounded">{'{{email}}'}</code>, <code className="bg-gray-100 px-1 rounded">{'{{password}}'}</code></p>
+                  <p className="text-xs text-gray-500 mt-1">Variables: <code className="bg-gray-100 px-1 rounded">{'{{name}}'}</code>, <code className="bg-gray-100 px-1 rounded">{'{{email}}'}</code>, <code className="bg-gray-100 px-1 rounded">{'{{password}}'}</code>, <code className="bg-gray-100 px-1 rounded">{'{{url}}'}</code></p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Asignación de Área</label>
@@ -746,7 +752,7 @@ export default function AdminDashboard() {
                     onChange={(e) => setLocalSmtp({...localSmtp, tplPassword: e.target.value})}
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-[#E85D5D] focus:border-[#E85D5D]"
                   />
-                  <p className="text-xs text-gray-500 mt-1">Variables: <code className="bg-gray-100 px-1 rounded">{'{{name}}'}</code></p>
+                  <p className="text-xs text-gray-500 mt-1">Variables: <code className="bg-gray-100 px-1 rounded">{'{{name}}'}</code>, <code className="bg-gray-100 px-1 rounded">{'{{password}}'}</code>, <code className="bg-gray-100 px-1 rounded">{'{{url}}'}</code></p>
                 </div>
               </div>
             </div>
