@@ -48,26 +48,17 @@ async function initDatabase() {
         role VARCHAR(50),
         password VARCHAR(255),
         agencies NVARCHAR(MAX),
-        permissions NVARCHAR(MAX)
+        permissions NVARCHAR(MAX),
+        mustChangePassword BIT DEFAULT 1
       )
     `);
 
-    // Create Dev Assets tables
+    // Ensure mustChangePassword column exists for existing setups
     await sysPool.request().query(`
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='DevSources' and xtype='U')
-      CREATE TABLE DevSources ( id VARCHAR(100) PRIMARY KEY, data NVARCHAR(MAX) )
-
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='DevMeasures' and xtype='U')
-      CREATE TABLE DevMeasures ( id VARCHAR(100) PRIMARY KEY, data NVARCHAR(MAX) )
-
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='DevCanvas' and xtype='U')
-      CREATE TABLE DevCanvas ( id VARCHAR(100) PRIMARY KEY, data NVARCHAR(MAX) )
-
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='PublishedDashboards' and xtype='U')
-      CREATE TABLE PublishedDashboards ( id VARCHAR(100) PRIMARY KEY, data NVARCHAR(MAX) )
-
-      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='SystemDashboards' and xtype='U')
-      CREATE TABLE SystemDashboards ( areaId VARCHAR(100), dashId VARCHAR(100), data NVARCHAR(MAX), PRIMARY KEY (areaId, dashId) )
+      IF COL_LENGTH('Users', 'mustChangePassword') IS NULL
+      BEGIN
+        ALTER TABLE Users ADD mustChangePassword BIT DEFAULT 1
+      END
     `);
 
     // Insert default Admin user if table is empty
@@ -110,6 +101,7 @@ initDatabase();
 
 // ── Token store (in-memory for local dev) ─────────────────────────────────
 const tokens = new Map(); // token → { userId, exp }
+const magicTokens = new Map(); // one-time magic link token → { userId, exp }
 
 // Middleware to validate token
 function requireToken(req, res, next) {
@@ -171,7 +163,8 @@ app.post('/api/auth/issue', async (req, res) => {
     const userData = {
       ...user,
       agencies: user.agencies ? JSON.parse(user.agencies) : [],
-      permissions: user.permissions ? JSON.parse(user.permissions) : { areas: [], dashboards: [] }
+      permissions: user.permissions ? JSON.parse(user.permissions) : { areas: [], dashboards: [] },
+      mustChangePassword: user.mustChangePassword === 1 || user.mustChangePassword === true
     };
 
     // Update lastLoginAt etc could be done here if the table had those columns
@@ -190,6 +183,68 @@ app.post('/api/auth/revoke', (req, res) => {
   res.json({ success: true });
 });
 
+// Generate a one-time token for magic links (admin only conceptually, protected by requireToken)
+app.post('/api/auth/magic-token', requireToken, async (req, res) => {
+  const { userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'Missing userId' });
+
+  // Create a short-lived token (e.g., 24 hours)
+  const token = crypto.randomBytes(32).toString('hex');
+  magicTokens.set(token, {
+    userId,
+    exp: Date.now() + 24 * 60 * 60 * 1000 // 24 hours
+  });
+
+  res.json({ success: true, token });
+});
+
+// Consume a magic token to log in
+app.post('/api/auth/magic-login', async (req, res) => {
+  const { token } = req.body;
+  if (!token) return res.status(400).json({ error: 'Missing token' });
+
+  const magic = magicTokens.get(token);
+  if (!magic || Date.now() > magic.exp) {
+    if (magic) magicTokens.delete(token); // Cleanup if expired
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+
+  // Token is valid, single-use, so delete it
+  magicTokens.delete(token);
+
+  try {
+    // Get the user data to return
+    const result = await sysPool.request()
+      .input('id', sql.VarChar, magic.userId)
+      .query('SELECT * FROM Users WHERE id = @id');
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userRow = result.recordset[0];
+    const user = {
+      ...userRow,
+      agencies: userRow.agencies ? JSON.parse(userRow.agencies) : [],
+      permissions: userRow.permissions ? JSON.parse(userRow.permissions) : { areas: [], dashboards: [] },
+      mustChangePassword: userRow.mustChangePassword === 1 || userRow.mustChangePassword === true
+    };
+    delete user.password;
+
+    // Issue a normal session token
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+    tokens.set(sessionToken, {
+      userId: user.id,
+      exp: Date.now() + 8 * 60 * 60 * 1000  // 8 hours
+    });
+
+    res.json({ success: true, token: sessionToken, user });
+  } catch (err) {
+    console.error('[/api/auth/magic-login]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── User CRUD Endpoints ───────────────────────────────────────────────────
 
 // GET /api/users
@@ -199,7 +254,8 @@ app.get('/api/users', requireToken, requireAdmin, async (req, res) => {
     const users = result.recordset.map(u => ({
       ...u,
       agencies: u.agencies ? JSON.parse(u.agencies) : [],
-      permissions: u.permissions ? JSON.parse(u.permissions) : { areas: [], dashboards: [] }
+      permissions: u.permissions ? JSON.parse(u.permissions) : { areas: [], dashboards: [] },
+      mustChangePassword: u.mustChangePassword === 1 || u.mustChangePassword === true
     }));
     res.json({ success: true, users });
   } catch (err) {
@@ -222,11 +278,12 @@ app.post('/api/users', requireToken, requireAdmin, async (req, res) => {
       .input('pass', sql.VarChar, mockHash(password || '123456'))
       .input('ag', sql.NVarChar, JSON.stringify(agencies || []))
       .input('perm', sql.NVarChar, JSON.stringify(permissions || { areas: [], dashboards: [] }))
+      .input('mustChange', sql.Bit, 1)
       .query(`
-        INSERT INTO Users (id, firstName, lastName, email, role, password, agencies, permissions)
-        VALUES (@id, @fn, @ln, @email, @role, @pass, @ag, @perm)
+        INSERT INTO Users (id, firstName, lastName, email, role, password, agencies, permissions, mustChangePassword)
+        VALUES (@id, @fn, @ln, @email, @role, @pass, @ag, @perm, @mustChange)
       `);
-    res.json({ success: true, user: { id: newId, firstName, lastName, email, role, agencies, permissions } });
+    res.json({ success: true, user: { id: newId, firstName, lastName, email, role, agencies, permissions, mustChangePassword: true } });
   } catch (err) {
     console.error('[/api/users POST]', err.message);
     res.status(500).json({ error: err.message });
@@ -262,13 +319,18 @@ app.put('/api/users/:id/agencies', requireToken, requireAdmin, async (req, res) 
 });
 
 // PUT /api/users/:id/password
-app.put('/api/users/:id/password', requireToken, requireAdmin, async (req, res) => {
-  const { password } = req.body;
+app.put('/api/users/:id/password', requireToken, async (req, res) => {
+  const { password, mustChangePassword } = req.body;
   try {
+    let queryStr = 'UPDATE Users SET password = @pass, mustChangePassword = 0 WHERE id = @id';
+    if (mustChangePassword === true) {
+      queryStr = 'UPDATE Users SET password = @pass, mustChangePassword = 1 WHERE id = @id';
+    }
+
     await sysPool.request()
       .input('id', sql.VarChar, req.params.id)
       .input('pass', sql.VarChar, mockHash(password))
-      .query('UPDATE Users SET password = @pass WHERE id = @id');
+      .query(queryStr);
     res.json({ success: true });
   } catch (err) {
     console.error('[/api/users/password PUT]', err.message);

@@ -34,7 +34,12 @@ def send_email():
         msg['From'] = f"{from_name} <{user}>"
         msg['To'] = recipient
         msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
+
+        # Determine if the body is HTML by checking for a simple HTML tag
+        if '<html>' in body.lower() or '<!doctype html>' in body.lower() or '<p>' in body.lower():
+            msg.attach(MIMEText(body, 'html'))
+        else:
+            msg.attach(MIMEText(body, 'plain'))
 
         with smtplib.SMTP(host, port) as server:
             server.starttls()

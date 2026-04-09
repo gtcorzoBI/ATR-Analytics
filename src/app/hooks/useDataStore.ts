@@ -219,14 +219,14 @@ export const useDataStore = () => {
     createUser: async (u: User) => {
       // Optimistic update
       const tempId = Date.now().toString();
-      const newUser = { ...u, id: tempId, password: mockHash(u.password || '123456') };
+      const newUser = { ...u, id: tempId, password: mockHash(u.password || '123456'), mustChangePassword: true };
       internal_users = [...internal_users, newUser];
       persist("atr_users", internal_users);
 
       const token = localStorage.getItem("atr_token");
       if (token) {
         try {
-          await fetch(`${API}/api/users`, {
+          const res = await fetch(`${API}/api/users`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -235,11 +235,16 @@ export const useDataStore = () => {
             body: JSON.stringify(u)
           });
           // Refresh list to get actual ID and exact DB representation
-          fetchAllDataFromBackend();
+          fetchUsersFromBackend();
+          if (res.ok) {
+            const data = await res.json();
+            return data.user || newUser;
+          }
         } catch (e) {
           console.error("Failed to create user on backend", e);
         }
       }
+      return newUser;
     },
     deleteUser: async (id: string) => {
       // Optimistic update
@@ -272,7 +277,7 @@ export const useDataStore = () => {
               "Content-Type": "application/json",
               Authorization: `Bearer ${token}`
             },
-            body: JSON.stringify({ password: pass })
+            body: JSON.stringify({ password: pass, mustChangePassword: true })
           });
         } catch (e) {
           console.error("Failed to reset password on backend", e);

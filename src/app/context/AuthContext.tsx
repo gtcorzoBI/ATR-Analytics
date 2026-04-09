@@ -24,6 +24,7 @@ type AuthContextType = {
   user: UserType | null;
   token: string | null;
   login: (email: string, pass: string) => Promise<boolean>;
+  magicLogin: (token: string) => Promise<boolean>;
   logout: () => void;
   updatePassword: (newPass: string) => void;
   recordActivity: (dashboardTitle: string) => void;
@@ -118,6 +119,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const magicLogin = async (magicToken: string): Promise<boolean> => {
+    try {
+      const r = await fetch(`${API}/api/auth/magic-login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: magicToken }),
+      });
+
+      if (r.ok) {
+        const d = await r.json();
+        if (d.success && d.token && d.user) {
+          const now = new Date().toISOString();
+          const loggedUser = {
+            ...d.user,
+            previousLoginAt: d.user.lastLoginAt || null,
+            lastLoginAt: now,
+            lastActiveAt: now,
+          };
+
+          setToken(d.token);
+          localStorage.setItem("atr_token", d.token);
+
+          setUser(loggedUser);
+          localStorage.setItem("active_user", JSON.stringify(loggedUser));
+          localStorage.setItem("isLoggedIn", "true");
+
+          return true;
+        }
+      }
+      return false;
+    } catch (err) {
+      console.error("Magic login failed.", err);
+      return false;
+    }
+  };
+
   const logout = async () => {
     // Revoke token on server
     if (token) {
@@ -176,7 +213,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, token, login, logout, updatePassword, recordActivity }}
+      value={{ user, token, login, magicLogin, logout, updatePassword, recordActivity }}
     >
       {children}
     </AuthContext.Provider>
