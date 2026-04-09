@@ -20,7 +20,34 @@ const dbConfig = {
   },
 };
 
-const sysPool = new sql.ConnectionPool(dbConfig);
+let sysPool;
+const isMockDB = process.env.MOCK_DB === 'true';
+
+if (isMockDB) {
+  console.log('🧪 Running with MOCK_DB=true. MS SQL Server connection bypassed.');
+  // Create a dummy pool that resolves with empty sets
+  sysPool = {
+    connect: async () => {},
+    close: async () => {},
+    request: () => {
+      const req = {
+        input: () => req,
+        query: async (q) => {
+          if (q.includes('COUNT(*)')) return { recordset: [{ cnt: 1 }] };
+          if (q.includes('SELECT role FROM Users')) return { recordset: [{ role: 'admin' }] };
+          if (q.includes('SELECT * FROM Users WHERE email = @email')) {
+             return { recordset: [{ id: '1', email: 'admin@atr.com', password: 'admin', role: 'admin' }] };
+          }
+          if (q.includes('SELECT * FROM Users')) return { recordset: [{ id: '1', email: 'admin@atr.com', password: 'admin', role: 'admin' }] };
+          return { recordset: [] };
+        }
+      };
+      return req;
+    }
+  };
+} else {
+  sysPool = new sql.ConnectionPool(dbConfig);
+}
 
 // Helper for passwords
 const mockHash = (str) => {
@@ -516,6 +543,17 @@ app.delete('/api/dev/system/:areaId/:dashId', requireToken, async (req, res) => 
 
 // Helper: build a fresh mssql connection (no pool reuse)
 async function withConnection(creds, fn) {
+  if (isMockDB) {
+    const dummyPool = {
+      close: async () => {},
+      request: () => ({
+        input: function() { return this; },
+        query: async () => ({ recordset: [] })
+      })
+    };
+    return await fn(dummyPool);
+  }
+
   const pool = new sql.ConnectionPool({
     user: creds.username,
     password: creds.password,

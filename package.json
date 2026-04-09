@@ -6,6 +6,8 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite",
+    "dev:sandbox": "VITE_E2E_TESTING=true vite",
+    "api:mock": "MOCK_DB=true node backend.js",
     "api": "node backend.js",
     "mail-engine": "python3 mail_engine.py"
   },
