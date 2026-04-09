@@ -954,6 +954,7 @@ export default function DevDashboard() {
                         <Loader2 className="w-5 h-5 animate-spin" /> Ejecutando...
                       </div>
                     ) : (
+                      <>
                       <table className="w-full text-xs border-collapse min-w-max">
                         <thead>
                           <tr className="sticky top-0 z-10 bg-slate-100">
@@ -961,7 +962,7 @@ export default function DevDashboard() {
                           </tr>
                         </thead>
                         <tbody>
-                          {activeTab.rows.map((row, i) => (
+                          {activeTab.rows.slice(0, 100).map((row, i) => (
                             <tr key={i} className={`border-b border-slate-100 ${i % 2 === 0 ? '' : 'bg-slate-50/50'} hover:bg-indigo-50 transition`}>
                               {activeTab.columns.map(col => (
                                 <td key={col} className="px-3 py-1.5 text-slate-700 whitespace-nowrap max-w-[220px] truncate" title={String(row[col] ?? '')}>
@@ -972,7 +973,12 @@ export default function DevDashboard() {
                           ))}
                         </tbody>
                       </table>
-                    )}
+                      {activeTab.rows.length > 100 && (
+                        <div className="py-2 text-center text-[10px] text-slate-400 font-medium italic border-t border-slate-100 bg-slate-50/30">
+                          Mostrando 100 de {activeTab.rows.length} registros para optimizar el rendimiento. El gráfico utilizará todos los datos.
+                        </div>
+                      )}
+                    </>)}
                   </div>
                 </div>
 
