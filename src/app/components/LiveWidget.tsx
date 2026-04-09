@@ -10,7 +10,7 @@ interface LiveWidgetProps {
   padding?: number;
 }
 
-export default function LiveWidget({ code, rows, columns, dark, padding = 8 }: LiveWidgetProps) {
+export default React.memo(function LiveWidget({ code, rows, columns, dark, padding = 8 }: LiveWidgetProps) {
   const [filterTick, setFilterTick] = React.useState(0);
   React.useEffect(() => {
     const handleFilter = () => setFilterTick(t => t + 1);
@@ -20,7 +20,7 @@ export default function LiveWidget({ code, rows, columns, dark, padding = 8 }: L
 
   const filteredRows = React.useMemo(() => {
     const filters = (window as any).__dashboardFilters || {};
-    let result = rows;
+    let result = rows || [];
     for (const [field, allowed] of Object.entries(filters)) {
       if (!allowed) continue;
       // Date range filter
@@ -72,4 +72,4 @@ export default function LiveWidget({ code, rows, columns, dark, padding = 8 }: L
       )}
     </div>
   );
-}
+});
