@@ -34,9 +34,16 @@ export default function DashboardBuilder({ components, dark, onClose }: Dashboar
 
   // ── Canvas items ────────────────────────────────────────────────────────
   const { devCanvas = [], saveDevCanvas } = useDataStore() as any;
-  const items: DashItem[] = devCanvas;
+  const [items, setItems] = useState<DashItem[]>(devCanvas);
+
+  // Keep local state in sync if external stores change (e.g. data arrives from backend)
+  useEffect(() => {
+    // If we have items and they are empty but devCanvas has data, sync them
+    setItems(devCanvas);
+  }, [devCanvas]); 
 
   const save = useCallback((updated: DashItem[]) => {
+    setItems(updated);
     saveDevCanvas(updated);
   }, [saveDevCanvas]);
 
@@ -90,9 +97,13 @@ export default function DashboardBuilder({ components, dark, onClose }: Dashboar
     if (activeId) {
       setActiveId(null);
       setIsResizing(false);
-      save(items); // Force save on mouseup since resize events skip persistence for performance
+      // We use a function to read the latest state reliably
+      setItems(currentItems => {
+        saveDevCanvas(currentItems);
+        return currentItems;
+      });
     }
-  }, [activeId, items, save]);
+  }, [activeId, saveDevCanvas]);
 
   useEffect(() => {
     if (activeId) {
@@ -132,8 +143,8 @@ export default function DashboardBuilder({ components, dark, onClose }: Dashboar
         components: items.map(it => ({ 
           name: it.name, 
           code: it.code, 
-          rows: it.rows, 
-          columns: it.columns, 
+          rows: [],  // Rows removed to avoid localStorage quota issues
+          columns: it.columns || [], 
           x: it.x, y: it.y, w: it.w, h: it.h 
         })),
         publishedAt: new Date().toISOString(),
@@ -144,6 +155,7 @@ export default function DashboardBuilder({ components, dark, onClose }: Dashboar
       setPublished(true);
     } catch (e) {
       console.error("Publish error:", e);
+      alert("Error al publicar. Revisa la consola.");
     } finally {
       setPublishing(false);
     }

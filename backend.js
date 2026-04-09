@@ -2,6 +2,9 @@ import express from 'express';
 import cors from 'cors';
 import sql from 'mssql';
 import crypto from 'crypto';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const app = express();
 app.use(cors({ origin: '*' }));
@@ -9,10 +12,10 @@ app.use(express.json({ limit: '10mb' }));
 
 // ── Database Configuration & Initialization ────────────────────────────────
 const dbConfig = {
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  server: process.env.DB_HOST,
+  user: process.env.DB_USER || 'sa',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'ATRAnalytics',
+  server: process.env.DB_HOST || 'localhost',
   pool: { max: 10, min: 0, idleTimeoutMillis: 30000 },
   options: {
     encrypt: false,

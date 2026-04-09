@@ -159,13 +159,39 @@ const fetchAllDataFromBackend = async () => {
       internal_system = devAssets.systemDashboards;
     }
 
-    localStorage.setItem("atr_dev_sources", JSON.stringify(internal_sources));
-    localStorage.setItem("atr_dev_measures", JSON.stringify(internal_measures));
-    localStorage.setItem("atr_dev_canvas", JSON.stringify(internal_canvas));
-    localStorage.setItem("atr_published_dashboards", JSON.stringify(internal_published));
-    localStorage.setItem("atr_system_dashboards", JSON.stringify(internal_system));
+    // Prune rows before saving to localStorage to stay within 5MB quota
+    const liteSources = internal_sources.map((s: any) => ({ ...s, rows: [] }));
+    const liteMeasures = internal_measures.map((m: any) => ({ ...m, rows: [] }));
+    const liteCanvas = internal_canvas.map((c: any) => ({ ...c, rows: [] }));
+
+    try {
+      localStorage.setItem("atr_dev_sources", JSON.stringify(liteSources));
+      localStorage.setItem("atr_dev_measures", JSON.stringify(liteMeasures));
+      localStorage.setItem("atr_dev_canvas", JSON.stringify(liteCanvas));
+      localStorage.setItem("atr_published_dashboards", JSON.stringify(internal_published));
+      localStorage.setItem("atr_system_dashboards", JSON.stringify(internal_system));
+    } catch (e) {
+      console.warn("Storage quota exceeded, could not persist all dev assets to LocalStorage.", e);
+    }
   }
   notify();
+};
+
+const serializeLite = (val: any): string => {
+  if (!val) return JSON.stringify(val);
+  
+  const strip = (item: any) => {
+    if (typeof item !== 'object' || item === null) return item;
+    if (Array.isArray(item)) return item.map(strip);
+    const { rows, ...rest } = item;
+    // Recursively handle components within dashboards
+    if (rest.components && Array.isArray(rest.components)) {
+      rest.components = rest.components.map(strip);
+    }
+    return rest;
+  };
+
+  return JSON.stringify(strip(val));
 };
 
 const persistBackend = async (endpoint: string, method: string, body?: any) => {
@@ -209,7 +235,13 @@ export const useDataStore = () => {
   }, []);
 
   const persist = (key: string, val: any) => {
-    localStorage.setItem(key, JSON.stringify(val));
+    try {
+      // Don't save actual data rows in localStorage, it's too heavy (Limit 5MB)
+      const liteString = serializeLite(val);
+      localStorage.setItem(key, liteString);
+    } catch (e) {
+      console.warn(`LocalStorage quota exceeded for key: ${key}. Data was not saved locally.`);
+    }
     notify();
   };
 
@@ -319,6 +351,28 @@ export const useDataStore = () => {
     dataSources: internal_sources,
     devMeasures: internal_measures,
     devCanvas: internal_canvas,
+    clearAllDevState: async () => {
+      // Clear in-memory module state immediately
+      const oldSources = [...internal_sources];
+      internal_sources = [];
+      internal_measures = [];
+      internal_canvas = [];
+      // Clear localStorage
+      localStorage.removeItem("atr_dev_sources");
+      localStorage.removeItem("atr_dev_measures");
+      localStorage.removeItem("atr_dev_canvas");
+      notify();
+      // Also delete from backend (best-effort, no await)
+      const token = localStorage.getItem("atr_token");
+      if (token) {
+        oldSources.forEach(src => {
+          fetch(`${API}/api/dev/sources/${src.id}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${token}` }
+          }).catch(() => {});
+        });
+      }
+    },
     saveDevSource: (s: any) => {
       const src = { ...s, id: s.id || `src-${Date.now()}` };
       internal_sources = [...internal_sources, src];
@@ -351,7 +405,17 @@ export const useDataStore = () => {
     publishDashboard: (d: any) => {
       const published = { ...d, id: d.id || `pub-${Date.now()}` };
       internal_published = [...internal_published, published];
-      persist("atr_published_dashboards", internal_published);
+      try {
+        persist("atr_published_dashboards", internal_published);
+      } catch (e) {
+        // localStorage quota exceeded — strip row data and retry
+        const lite = internal_published.map((p: any) => ({
+          ...p,
+          components: (p.components || []).map((c: any) => ({ ...c, rows: [], columns: c.columns || [] }))
+        }));
+        try { localStorage.setItem("atr_published_dashboards", JSON.stringify(lite)); } catch(_) {}
+        notify();
+      }
       persistBackend('/api/dev/published', 'POST', published);
     },
     deletePublishedDashboard: (id: string) => {
