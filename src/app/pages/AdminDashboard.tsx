@@ -10,6 +10,8 @@ export default function AdminDashboard() {
   const { 
     createUser, 
     assignUserToArea, 
+    removeUserFromArea,
+    removeUserFromDashboard,
     assignUserToDashboard, 
     getRegularUsers,
     deleteUser,
@@ -309,7 +311,19 @@ export default function AdminDashboard() {
                       <div className="text-xs text-gray-500">{user.email}</div>
                     </div>
                     {hasAccess ? (
-                      <span className="text-xs font-semibold text-green-600 bg-green-50 px-2 py-1 rounded">Ya tiene acceso</span>
+                      <button
+                        onClick={() => {
+                          if (assignmentModal.type === 'area') {
+                            removeUserFromArea(user.id, assignmentModal.areaId);
+                          } else if (assignmentModal.dashboardId) {
+                            removeUserFromDashboard(user.id, assignmentModal.areaId, assignmentModal.dashboardId);
+                          }
+                          setAssignmentModal({...assignmentModal, isOpen: false});
+                        }}
+                        className="text-xs bg-red-100 hover:bg-red-200 text-red-700 px-3 py-1.5 rounded transition"
+                      >
+                        Quitar Acceso
+                      </button>
                     ) : (
                       <button 
                         onClick={() => submitAssignment(user.id)}
@@ -567,6 +581,7 @@ export default function AdminDashboard() {
               <thead className="bg-gray-50 text-gray-700 font-semibold border-b border-gray-200">
                 <tr>
                   <th className="px-4 py-3 rounded-tl-lg">Nombre</th>
+                  <th className="px-4 py-3">Áreas Asignadas</th>
                   <th className="px-4 py-3">Agencias</th>
                   <th className="px-4 py-3">Último Tablero Visto</th>
                   <th className="px-4 py-3">Estado y Conexiones</th>
@@ -610,6 +625,20 @@ export default function AdminDashboard() {
                         <td className="px-4 py-3">
                           <div className="font-medium text-gray-900">{fullName}</div>
                           <div className="text-xs text-gray-500">{u.email}</div>
+                        </td>
+
+                        <td className="px-4 py-3">
+                          <div className="flex flex-wrap gap-1">
+                            {u.permissions && u.permissions.areas && u.permissions.areas.length > 0 ? (
+                              u.permissions.areas.map((areaId: string) => (
+                                <span key={areaId} className="px-2 py-0.5 text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-200 rounded-full">
+                                  {AREA_NAMES[areaId]}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-xs text-gray-400 italic">Sin áreas</span>
+                            )}
+                          </div>
                         </td>
 
                         <td className="px-4 py-3">

@@ -318,6 +318,21 @@ app.put('/api/users/:id/agencies', requireToken, requireAdmin, async (req, res) 
   }
 });
 
+// PUT /api/users/:id/permissions
+app.put('/api/users/:id/permissions', requireToken, requireAdmin, async (req, res) => {
+  const permissions = req.body;
+  try {
+    await sysPool.request()
+      .input('id', sql.VarChar, req.params.id)
+      .input('perm', sql.NVarChar, JSON.stringify(permissions || { areas: [], dashboards: [] }))
+      .query('UPDATE Users SET permissions = @perm WHERE id = @id');
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[/api/users/permissions PUT]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // PUT /api/users/:id/password
 app.put('/api/users/:id/password', requireToken, async (req, res) => {
   const { password, mustChangePassword } = req.body;

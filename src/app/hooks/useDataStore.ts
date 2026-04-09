@@ -235,7 +235,7 @@ export const useDataStore = () => {
             body: JSON.stringify(u)
           });
           // Refresh list to get actual ID and exact DB representation
-          fetchUsersFromBackend();
+          fetchAllDataFromBackend();
           if (res.ok) {
             const data = await res.json();
             return data.user || newUser;
@@ -406,6 +406,33 @@ export const useDataStore = () => {
           : u
       );
       persist("atr_users", internal_users);
+    },
+    removeUserFromArea: async (userId: string, areaId: string) => {
+      internal_users = internal_users.map(u =>
+        u.id === userId
+          ? { ...u, permissions: { ...u.permissions, areas: u.permissions.areas.filter((id: string) => id !== areaId) } }
+          : u
+      );
+      persist("atr_users", internal_users);
+
+      const u = internal_users.find(u => u.id === userId);
+      if(u) {
+         persistBackend(`/api/users/${userId}/permissions`, 'PUT', u.permissions);
+      }
+    },
+    removeUserFromDashboard: async (userId: string, areaId: string, dashId: string) => {
+      const combined = `${areaId}/${dashId}`;
+      internal_users = internal_users.map(u =>
+        u.id === userId
+          ? { ...u, permissions: { ...u.permissions, dashboards: u.permissions.dashboards.filter((id: string) => id !== combined) } }
+          : u
+      );
+      persist("atr_users", internal_users);
+
+      const u = internal_users.find(u => u.id === userId);
+      if(u) {
+         persistBackend(`/api/users/${userId}/permissions`, 'PUT', u.permissions);
+      }
     },
     assignUserToDashboard: (userId: string, areaId: string, dashId: string) => {
       const combined = `${areaId}/${dashId}`;
