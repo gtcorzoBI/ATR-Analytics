@@ -517,6 +517,9 @@ app.delete('/api/dev/system/:areaId/:dashId', requireToken, async (req, res) => 
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Query Cache for Chunking ──────────────────────────────────────────────
+const queryCache = new Map();
+
 // Helper: build a fresh mssql connection (no pool reuse)
 async function withConnection(creds, fn) {
   const pool = new sql.ConnectionPool({
@@ -600,21 +603,35 @@ app.post('/api/query', requireToken, async (req, res) => {
       ? Object.keys(result.recordset[0])
       : [];
 
-    let finalRows = result.recordset;
-    let warning = null;
+    // Cache the result for chunked downloading
+    const queryId = crypto.randomBytes(16).toString('hex');
+    queryCache.set(queryId, result.recordset);
 
-    // SAFETY LIMIT: Prevent Node.js from sending >100MB JSON payload which crashes the browser
-    const MAX_ROWS = 5000;
-    if (finalRows.length > MAX_ROWS) {
-      finalRows = finalRows.slice(0, MAX_ROWS);
-      warning = `Resultado limitado a ${MAX_ROWS} registros por seguridad. Utiliza cláusulas WHERE o GROUP BY para analizar los datos masivos sin colapsar la memoria del navegador.`;
-    }
+    // Clear cache after 15 minutes
+    setTimeout(() => {
+      queryCache.delete(queryId);
+    }, 15 * 60 * 1000);
 
-    res.json({ success: true, columns, rows: finalRows, warning });
+    res.json({ success: true, queryId, columns, totalRows: result.recordset.length });
   } catch (err) {
     console.error('[/api/query]', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// GET /api/query/chunk/:queryId
+app.get('/api/query/chunk/:queryId', requireToken, (req, res) => {
+  const { queryId } = req.params;
+  const offset = parseInt(req.query.offset || '0', 10);
+  const limit = parseInt(req.query.limit || '10000', 10);
+
+  const recordset = queryCache.get(queryId);
+  if (!recordset) {
+    return res.status(404).json({ error: 'Consulta expirada o no encontrada. Vuelve a ejecutarla.' });
+  }
+
+  const chunk = recordset.slice(offset, offset + limit);
+  res.json({ success: true, rows: chunk });
 });
 
 // No-token health check

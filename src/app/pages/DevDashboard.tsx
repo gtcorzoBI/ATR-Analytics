@@ -389,9 +389,31 @@ export default function DevDashboard() {
     try {
       const d = await apiFetch("/api/query", { host: conn.host, database: conn.database, username: conn.username, password: conn.password, query: tab.query });
       if (d.success) {
-        patchTab(tab.id, { rows: d.rows, columns: d.columns, loading: false, queryRan: true, error: d.warning || "" });
+        if (d.queryId && typeof d.totalRows === 'number') {
+           // Chunked download strategy
+           let allRows: any[] = [];
+           const total = d.totalRows;
+           const CHUNK_SIZE = 10000;
+
+           for (let offset = 0; offset < total; offset += CHUNK_SIZE) {
+              const headers: Record<string, string> = { "Content-Type": "application/json" };
+              if (token) headers["Authorization"] = `Bearer ${token}`;
+
+              const chunkRes = await fetch(`${API}/api/query/chunk/${d.queryId}?offset=${offset}&limit=${CHUNK_SIZE}`, { headers }).then(r => r.json());
+              if (chunkRes.success) {
+                 allRows = allRows.concat(chunkRes.rows);
+              } else {
+                 patchTab(tab.id, { error: chunkRes.error || "Error descargando chunk", loading: false });
+                 return;
+              }
+           }
+           patchTab(tab.id, { rows: allRows, columns: d.columns, loading: false, queryRan: true, error: "" });
+        } else {
+           // Fallback for simple queries like testConn
+           patchTab(tab.id, { rows: d.rows || [], columns: d.columns || [], loading: false, queryRan: true, error: "" });
+        }
       } else {
-        patchTab(tab.id, { error: d.error, loading: false });
+         patchTab(tab.id, { error: d.error, loading: false });
       }
     } catch {
       patchTab(tab.id, { error: "No se puede conectar al backend. Ejecuta: npm run api", loading: false });
