@@ -383,7 +383,8 @@ export const useDataStore = () => {
       const measure = { ...m, id: m.id || `msr-${Date.now()}` };
       internal_measures = [...internal_measures, measure];
       persist("atr_dev_measures", internal_measures);
-      persistBackend('/api/dev/measures', 'POST', measure);
+      const liteMeasure = { ...measure, rows: [] };
+      persistBackend('/api/dev/measures', 'POST', liteMeasure);
     },
     deleteDevSource: (id: string) => {
       internal_sources = internal_sources.filter((s: any) => s.id !== id);
@@ -399,7 +400,8 @@ export const useDataStore = () => {
       // The canvas is the entire array of items currently on the board
       internal_canvas = items;
       persist("atr_dev_canvas", internal_canvas);
-      persistBackend('/api/dev/canvas', 'POST', { id: 'active_canvas', items });
+      const liteItems = items.map(item => ({ ...item, rows: [] }));
+      persistBackend('/api/dev/canvas', 'POST', { id: 'active_canvas', items: liteItems });
     },
     publishedDashboards: internal_published,
     publishDashboard: (d: any) => {

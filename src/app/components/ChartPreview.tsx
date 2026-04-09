@@ -14,6 +14,8 @@ export function evalChartCode(
   rows: any[],
   cols: string[]
 ): { Component: React.ComponentType | null; error: string } {
+  rows = rows || [];
+  cols = cols || [];
   try {
     const w = window as any;
     if (!w.Babel) throw new Error("Babel no está listo aún — espera 2 segundos e intenta de nuevo");

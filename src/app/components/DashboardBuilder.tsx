@@ -235,7 +235,7 @@ export default function DashboardBuilder({ components, dark, onClose }: Dashboar
                   <span className="text-xs font-bold truncate flex-1">{comp.name}</span>
                 </div>
                 <div className="text-[10px] mt-2 flex justify-between" style={{ color: muted }}>
-                  <span>{comp.rows.length} registros</span>
+                  <span>{comp.rows?.length || 0} registros</span>
                   <span className="text-indigo-500 font-bold opacity-0 group-hover:opacity-100">+ Agregar</span>
                 </div>
               </div>
