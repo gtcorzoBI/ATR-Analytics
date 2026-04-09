@@ -406,6 +406,11 @@ export const useDataStore = () => {
           : u
       );
       persist("atr_users", internal_users);
+
+      const u = internal_users.find(u => u.id === userId);
+      if(u) {
+         persistBackend(`/api/users/${userId}/permissions`, 'PUT', u.permissions);
+      }
     },
     removeUserFromArea: async (userId: string, areaId: string) => {
       internal_users = internal_users.map(u =>
@@ -442,6 +447,11 @@ export const useDataStore = () => {
           : u
       );
       persist("atr_users", internal_users);
+
+      const u = internal_users.find(u => u.id === userId);
+      if(u) {
+         persistBackend(`/api/users/${userId}/permissions`, 'PUT', u.permissions);
+      }
     }
   };
 };
