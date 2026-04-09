@@ -41,6 +41,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Restore session on mount
   useEffect(() => {
+    // E2E Testing / Auto-Login Bypass
+    if (import.meta.env.VITE_E2E_TESTING === "true") {
+      const mockAdminUser: UserType = {
+        id: "1",
+        firstName: "Admin",
+        lastName: "User",
+        email: "admin@atr.com",
+        role: "admin",
+        agency: "ATR Matriz",
+        agencies: ["ATR Matriz", "ATR Sucursal"],
+        mustChangePassword: false,
+        permissions: { areas: [], dashboards: [] }
+      };
+      setUser(mockAdminUser);
+      setToken("test_token_123");
+      localStorage.setItem("atr_token", "test_token_123");
+      localStorage.setItem("active_user", JSON.stringify(mockAdminUser));
+      localStorage.setItem("isLoggedIn", "true");
+      return;
+    }
+
     const savedUser = localStorage.getItem("active_user");
     const savedToken = localStorage.getItem("atr_token");
     if (savedUser && savedToken) {
