@@ -61,6 +61,14 @@ async function initDatabase() {
       END
     `);
 
+    // Ensure permissions column exists for existing setups
+    await sysPool.request().query(`
+      IF COL_LENGTH('Users', 'permissions') IS NULL
+      BEGIN
+        ALTER TABLE Users ADD permissions NVARCHAR(MAX)
+      END
+    `);
+
     // Insert default Admin user if table is empty
     const { recordset } = await sysPool.request().query('SELECT COUNT(*) as cnt FROM Users');
     if (recordset[0].cnt === 0) {
@@ -266,9 +274,10 @@ app.get('/api/users', requireToken, requireAdmin, async (req, res) => {
 
 // POST /api/users
 app.post('/api/users', requireToken, requireAdmin, async (req, res) => {
-  const { firstName, lastName, email, role, password, agencies, permissions } = req.body;
+  const { firstName, lastName, email, role, password, agencies, permissions, mustChangePassword } = req.body;
   const newId = Date.now().toString();
   try {
+    const isMustChange = mustChangePassword !== undefined ? (mustChangePassword ? 1 : 0) : 1;
     await sysPool.request()
       .input('id', sql.VarChar, newId)
       .input('fn', sql.NVarChar, firstName)
@@ -278,12 +287,12 @@ app.post('/api/users', requireToken, requireAdmin, async (req, res) => {
       .input('pass', sql.VarChar, mockHash(password || '123456'))
       .input('ag', sql.NVarChar, JSON.stringify(agencies || []))
       .input('perm', sql.NVarChar, JSON.stringify(permissions || { areas: [], dashboards: [] }))
-      .input('mustChange', sql.Bit, 1)
+      .input('mustChange', sql.Bit, isMustChange)
       .query(`
         INSERT INTO Users (id, firstName, lastName, email, role, password, agencies, permissions, mustChangePassword)
         VALUES (@id, @fn, @ln, @email, @role, @pass, @ag, @perm, @mustChange)
       `);
-    res.json({ success: true, user: { id: newId, firstName, lastName, email, role, agencies, permissions, mustChangePassword: true } });
+    res.json({ success: true, user: { id: newId, firstName, lastName, email, role, agencies, permissions, mustChangePassword: isMustChange === 1 } });
   } catch (err) {
     console.error('[/api/users POST]', err.message);
     res.status(500).json({ error: err.message });

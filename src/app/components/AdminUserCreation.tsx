@@ -54,7 +54,8 @@ export function AdminUserCreation({ onCreate }: { onCreate: (data: any) => void 
       agencies: isDev ? ["ALL"] : agencies, 
       password,
       role: isDev ? "dev" : "user",
-      permissions: { areas: [], dashboards: [] }
+      permissions: { areas: [], dashboards: [] },
+      mustChangePassword: true
     });
     
     setFirstName("");
