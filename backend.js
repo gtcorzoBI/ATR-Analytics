@@ -599,7 +599,18 @@ app.post('/api/query', requireToken, async (req, res) => {
     const columns = result.recordset.length > 0
       ? Object.keys(result.recordset[0])
       : [];
-    res.json({ success: true, columns, rows: result.recordset });
+
+    let finalRows = result.recordset;
+    let warning = null;
+
+    // SAFETY LIMIT: Prevent Node.js from sending >100MB JSON payload which crashes the browser
+    const MAX_ROWS = 5000;
+    if (finalRows.length > MAX_ROWS) {
+      finalRows = finalRows.slice(0, MAX_ROWS);
+      warning = `Resultado limitado a ${MAX_ROWS} registros por seguridad. Utiliza cláusulas WHERE o GROUP BY para analizar los datos masivos sin colapsar la memoria del navegador.`;
+    }
+
+    res.json({ success: true, columns, rows: finalRows, warning });
   } catch (err) {
     console.error('[/api/query]', err.message);
     res.status(500).json({ error: err.message });

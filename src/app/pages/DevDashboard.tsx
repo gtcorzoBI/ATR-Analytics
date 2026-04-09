@@ -388,8 +388,11 @@ export default function DevDashboard() {
     patchTab(tab.id, { loading: true, error: "", queryRan: false });
     try {
       const d = await apiFetch("/api/query", { host: conn.host, database: conn.database, username: conn.username, password: conn.password, query: tab.query });
-      if (d.success) patchTab(tab.id, { rows: d.rows, columns: d.columns, loading: false, queryRan: true });
-      else patchTab(tab.id, { error: d.error, loading: false });
+      if (d.success) {
+        patchTab(tab.id, { rows: d.rows, columns: d.columns, loading: false, queryRan: true, error: d.warning || "" });
+      } else {
+        patchTab(tab.id, { error: d.error, loading: false });
+      }
     } catch {
       patchTab(tab.id, { error: "No se puede conectar al backend. Ejecuta: npm run api", loading: false });
     }
