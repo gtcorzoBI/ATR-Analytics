@@ -111,7 +111,7 @@ const notify = () => listeners.forEach(l => l());
 let internal_users: User[] = JSON.parse(localStorage.getItem("atr_users") || "null") || INITIAL_USERS;
 let internal_smtp: any = JSON.parse(localStorage.getItem("atr_smtp") || "{}");
 
-const API = "http://localhost:3001";
+const API = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:3001`;
 
 // Helper: generic fetch and parse
 const fetchFromBackend = async (endpoint: string) => {

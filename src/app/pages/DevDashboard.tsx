@@ -28,7 +28,7 @@ interface DataTab {
   loading: boolean; error: string; queryRan: boolean;
 }
 
-const API = "http://localhost:3001";
+const API = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:3001`;
 
 function typeColor(t: string) {
   const m: Record<string, string> = {

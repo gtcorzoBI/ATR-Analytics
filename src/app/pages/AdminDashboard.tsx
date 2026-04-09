@@ -4,7 +4,7 @@ import { AdminUserCreation, AGENCIES } from "../components/AdminUserCreation";
 import { useDataStore, INITIAL_AREAS, INITIAL_DASHBOARDS_MAP, AREA_NAMES } from "../hooks/useDataStore";
 import { ChevronDown, ChevronRight, MoreVertical, ShieldCheck, Shield, Trash2, KeyRound, Building2, Save, Mail, Eye, EyeOff, Archive, Trash } from "lucide-react";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
+const API_BASE = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:3001`;
 
 export default function AdminDashboard() {
   const { 
@@ -49,7 +49,8 @@ export default function AdminDashboard() {
       return;
     }
     try {
-      const response = await fetch("http://localhost:3002/api/send-email", {
+      const mailApi = import.meta.env.VITE_MAIL_API_URL || `${window.location.protocol}//${window.location.hostname}:3002`;
+      const response = await fetch(`${mailApi}/api/send-email`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
