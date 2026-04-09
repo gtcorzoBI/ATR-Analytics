@@ -10,6 +10,10 @@ import {
 import ChartPreview from "../components/ChartPreview";
 import DashboardBuilder from "../components/DashboardBuilder";
 import { useDataStore, AREA_NAMES, INITIAL_AREAS } from "../hooks/useDataStore";
+import { VISUAL_DEFINITIONS, VisualMappingState, getEmptyMapping, VisualSlotItem } from "../components/VisualDefinitions";
+import { generateChartCode } from "../components/VisualGenerator";
+import SyntaxHighlighter from "../components/SyntaxHighlighter";
+import RelationCanvas, { NodeDef, EdgeDef } from "../components/RelationCanvas";
 
 interface Connection {
   id: string; name: string; host: string;
@@ -87,7 +91,7 @@ export default function DevDashboard() {
   };
 
   // ── Connections ───────────────────────────────────────────────────────
-  const { dataSources, saveDevSource, saveDevCanvas, saveDevMeasure, deleteDevSource } = useDataStore(); // Assuming dataSources mapped here, adjust if store exposes it differently
+  const { dataSources, saveDevSource, saveDevCanvas, saveDevMeasure, deleteDevSource, clearAllDevState } = useDataStore() as any;
   // Dev sources act as connections here
   const connections: Connection[] = dataSources as Connection[];
   const [showAddConn, setShowAddConn] = useState(false);
@@ -98,9 +102,10 @@ export default function DevDashboard() {
   // ── Explorer ─────────────────────────────────────────────────────────
   const [expandedConn, setExpandedConn] = useState<string | null>(null);
   const [tablesMap, setTablesMap] = useState<Record<string, TableMeta[]>>({});
-  const [selectedTable, setSelectedTable] = useState<{ conn: Connection; schema: string; table: string } | null>(null);
-  const [selectedColumns, setSelectedColumns] = useState<ColumnMeta[]>([]);
+  const [trackedTables, setTrackedTables] = useState<{ conn: Connection; schema: string; table: string; columns: ColumnMeta[]; isExpanded: boolean }[]>([]);
+  const [showDataGrid, setShowDataGrid] = useState(true);
   const [tableSearch, setTableSearch] = useState("");
+  const [rightPanelSearch, setRightPanelSearch] = useState("");
   const [loadingTables, setLoadingTables] = useState<string | null>(null);
   const [loadingCols, setLoadingCols] = useState(false);
 
@@ -123,18 +128,36 @@ export default function DevDashboard() {
   // ── Dev Workflow State ────────────────────────────────────────────────
   const { systemDashboards } = useDataStore();
   const [viewMode, setViewMode] = useState<'landing' | 'main' | 'edit_selection' | 'basico'>('landing');
+  const [workspaceMode, setWorkspaceMode] = useState<'graphic' | 'code' | 'relations'>('graphic');
+  const [showLeftPanel, setShowLeftPanel] = useState(true);
+  const [showRightPanel, setShowRightPanel] = useState(true);
+  
   const [isDragging, setIsDragging] = useState(false);
   const [activeVisualType, setActiveVisualType] = useState<string | null>(null);
-  const [visualMapping, setVisualMapping] = useState<{
-    xAxis: string;
-    yAxis: string;
-    rows: string[];
-    cols: string[];
-    values: Array<{ name: string; agg: 'sum' | 'avg' | 'count' | 'distinct' | 'none' }>;
-    legend: string;
-  }>({
-    xAxis: '', yAxis: '', rows: [], cols: [], values: [], legend: ''
-  });
+  
+  const [relNodes, setRelNodes] = useState<NodeDef[]>([]);
+  const [relEdges, setRelEdges] = useState<EdgeDef[]>([]);
+  const [visualMapping, setVisualMapping] = useState<VisualMappingState>(getEmptyMapping());
+
+  // Sync trackedTables from Right Panel to Relation Canvas nodes automatically
+  useEffect(() => {
+    setRelNodes(prevNodes => {
+      const existingMap = new Map(prevNodes.map(n => [n.id, n]));
+      return trackedTables.map((t, idx) => {
+        const id = `${t.schema}.${t.table}`;
+        if (existingMap.has(id)) {
+          return { ...existingMap.get(id)!, fields: t.columns.map(c => ({ name: c.COLUMN_NAME, type: c.DATA_TYPE })) as any };
+        }
+        return {
+          id,
+          title: t.table,
+          x: 100 + (idx * 250) % 600,
+          y: 100 + (Math.floor(idx / 3) * 200),
+          fields: t.columns.map(c => ({ name: c.COLUMN_NAME, type: c.DATA_TYPE })) as any
+        }
+      });
+    });
+  }, [trackedTables]);
 
   const [securityGate, setSecurityGate] = useState<{
     isOpen: boolean;
@@ -146,18 +169,29 @@ export default function DevDashboard() {
     form: { user: 'sa', pass: '', host: 'localhost', db: '' }
   });
 
-  const startCreate = () => {
-    // Force complete reset for NEW projects
-    setTabs([]);
-    setActiveTabId(null);
-    // In a real DB scenario, we might not want to instantly delete all DB records here just by clicking "Start Create",
-    // but to preserve the exact UI functionality without modifying store deeply:
-    if (window.confirm("¿Seguro que deseas empezar de cero? Esto limpiará la sesión actual.")) {
+  const startCreate = async () => {
+    if (window.confirm("¿Seguro que deseas empezar de cero? Esto limpiará el espacio de trabajo local (se borrarán los componentes e conexiones de esta sesión).")) {
+       // Clear in-memory UI state
+       setTabs([]);
+       setActiveTabId(null);
        setActiveVisualType(null);
-       setVisualMapping({ xAxis: '', yAxis: '', rows: [], cols: [], values: [], legend: '' });
+       setVisualMapping(getEmptyMapping());
+       setTrackedTables([]);
+       setRelNodes([]);
+       setRelEdges([]);
        setViewMode('main');
-    }
-  };
+       setShowDataGrid(true);
+       setExpandedConn(null);
+       setTablesMap({});
+       setRightPanelSearch("");
+       setTableSearch("");
+       
+       // Wipe all dev state from memory, localStorage AND backend
+       await clearAllDevState();
+       saveDevCanvas([]); // ensure canvas is notified separately
+       // setViewMode('main') already called above — navigates directly to the editor
+     }
+   };
 
   const startBasico = () => {
     setTabs([{
@@ -246,80 +280,12 @@ export default function DevDashboard() {
   };
 
   // ── CODE GENERATOR 2.0 (AGGREGATIONS & SANITIZATION) ─────────────────
-  const updateGeneratedCode = (type: string, mapping: any) => {
+  const updateGeneratedCode = (type: string, mapping: VisualMappingState) => {
     if (!activeTabId) return;
     const title = activeTab?.title || "Data Chart";
-    const { xAxis, yAxis, values, rows, cols } = mapping;
-    
-    // Helper to sanitize variable names (fixes "no._de_vin" bug)
-    const clean = (name: string) => name.replace(/[^a-zA-Z0-9]/g, '_');
-    
-    // Aggregation Logic Injected into the component
-    const hasAgg = values.some((v:any) => v.agg !== 'none') || type === 'pie' || type === 'donut';
-    
-    let processLogic = '';
-    if (hasAgg || type === 'pie' || type === 'donut' || type === 'bar' || type === 'line' || type === 'area' || type === 'bar-h' || type === 'bar-stacked') {
-      processLogic = `
-  const processedData = React.useMemo(() => {
-    if (!data || data.length === 0) return [];
-    const grouped = data.reduce((acc, row) => {
-      const key = row["${xAxis}"] || 'Sin Datos';
-      if (!acc[key]) acc[key] = { "${xAxis}": key, _count: 0, _sum: {} };
-      acc[key]._count++;
-      ${values.map((v:any) => `
-      const val_${clean(v.name)} = parseFloat(row["${v.name}"]) || 0;
-      acc[key]._sum["${v.name}"] = (acc[key]._sum["${v.name}"] || 0) + val_${clean(v.name)};
-      `).join('')}
-      return acc;
-    }, {});
-    
-    return Object.values(grouped).map((g) => ({
-      ...g,
-      ${values.map((v:any) => `
-      "${v.name}": ${v.agg === 'avg' ? `g._sum["${v.name}"] / g._count` : v.agg === 'count' ? `g._count` : `g._sum["${v.name}"]`}`).join(',\n      ')}
-    }));
-  }, [data]);`;
-    } else {
-      processLogic = `const processedData = data;`;
-    }
-
-    let generated = '';
-    const renderData = hasAgg || type === 'pie' ? 'processedData' : 'data';
-
-    if (type === 'table') {
-      const allCols = [...rows, ...cols, ...values.map((v:any) => v.name)];
-      const finalCols = allCols.length > 0 ? allCols : (activeTab?.columns || []).slice(0, 5);
-      generated = `function Chart() {\n  return (\n    <div className="w-full h-full overflow-hidden flex flex-col">\n      <h3 className="text-gray-500 text-[10px] font-black uppercase mb-3 px-1 tracking-[0.2em]">${title}</h3>\n      <div className="flex-1 overflow-auto border rounded-3xl bg-white/50 backdrop-blur-sm">\n        <table className="w-full text-left text-[11px]">\n          <thead className="sticky top-0 bg-slate-50/80 backdrop-blur-md border-b"><tr>${finalCols.map(c => `<th key="${c}" className="p-3 text-gray-400 font-black uppercase text-[9px] tracking-tighter">${c}</th>`).join('')}</tr></thead>\n          <tbody className="divide-y divide-slate-100">{data.slice(0, 50).map((r, i) => <tr key={i} className="hover:bg-indigo-50/30 transition-colors">${finalCols.map(c => `<td key="${c}" className="p-3 font-medium text-slate-600">{r["${c}"]}</td>`).join('')}</tr>)}</tbody>\n        </table>\n      </div>\n    </div>\n  );\n}`;
-    } else if (type === 'bar' || type === 'line' || type === 'area' || type === 'bar-h' || type === 'bar-stacked') {
-      const isStacked = type === 'bar-stacked';
-      const isH = type === 'bar-h';
-      const chart = type === 'line' ? 'LineChart' : (type === 'area' ? 'AreaChart' : 'BarChart');
-      const comp = type === 'line' ? 'Line' : (type === 'area' ? 'Area' : 'Bar');
-      const colors = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
-      
-      generated = `function Chart() {\n  const { ResponsiveContainer, ${chart}, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ${comp}, Area, Defs, LinearGradient, Stop } = window.Recharts;\n  ${processLogic}\n  return (\n    <div style={{ width: '100%', height: 350 }}>\n    <ResponsiveContainer width="100%" height="100%">\n      <${chart} data={${renderData}} layout="${isH ? 'vertical' : 'horizontal'}" margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>\n        <defs>\n          <linearGradient id="colorVal" x1="0" y1="0" x2="0" y2="1">\n            <stop offset="5%" stopColor="#6366f1" stopOpacity={0.1}/>\n            <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>\n          </linearGradient>\n        </defs>\n        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />\n        <XAxis dataKey="${xAxis}" type="${isH ? 'number' : 'category'}" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#94a3b8'}} />\n        <YAxis type="${isH ? 'category' : 'number'}" axisLine={false} tickLine={false} tick={{fontSize: 10, fill: '#94a3b8'}} />\n        <Tooltip contentStyle={{borderRadius: '16px', border: 'none', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)', fontSize: '11px'}} />\n        <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{paddingBottom: '20px', fontSize: '10px', fontWeight: 'bold'}} />\n        ${values.map((v:any, i:number) => `<${comp} key="${v.name}" dataKey="${v.name}" name="${v.agg!=='none' ? v.agg.toUpperCase()+' de '+v.name : v.name}" ${isStacked ? 'stackId="a"' : ''} ${type==='area'?'fill="url(#colorVal)" fillOpacity={1}':''} ${type==='line'?'strokeWidth={3} dot={{r:4, strokeWidth:2, fill:"#fff"}}':''} stroke="${colors[i % colors.length]}" fill="${colors[i % colors.length]}" radius={[6, 6, 0, 0]} />`).join('\n        ')}\n      </${chart}>\n    </ResponsiveContainer>\n    </div>\n  );\n}`;
-    } else if (type === 'card') {
-      const valField = values[0]?.name || (activeTab?.columns[0]);
-      const aggType = values[0]?.agg || 'sum';
-      generated = `function Chart() {\n  const value = React.useMemo(() => {\n    if (!data || data.length === 0) return 0;\n    ${aggType === 'sum' ? `return data.reduce((acc, r) => acc + (parseFloat(r["${valField}"]) || 0), 0);` : aggType === 'avg' ? `return data.reduce((acc, r) => acc + (parseFloat(r["${valField}"]) || 0), 0) / data.length;` : `return data.length;`}\n  }, [data]);\n\n  return (\n    <div className="flex flex-col items-center justify-center h-full px-6 text-center animate-in zoom-in duration-500">\n      <h3 className="text-slate-400 text-[10px] font-black uppercase tracking-[0.2em] mb-2">${title}</h3>\n      <div className="text-6xl font-black text-indigo-600 tabular-nums tracking-tighter drop-shadow-sm"> {typeof value === 'number' ? value.toLocaleString(undefined, {maximumFractionDigits:1}) : value}</div>\n      <div className="mt-6 flex items-center gap-2 text-[10px] font-bold text-emerald-500 bg-emerald-500/10 px-4 py-1.5 rounded-full border border-emerald-500/20">\n        <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" /> Dato Actualizado\n      </div>\n    </div>\n  );\n}`;
-    } else if (type === 'pie' || type === 'donut') {
-      const isDonut = type === 'donut';
-      generated = `function Chart() {\n  const { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend } = window.Recharts;\n  ${processLogic}\n  const colors = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#2dd4bf'];\n  return (\n    <div className="w-full h-full flex flex-col items-center justify-center">\n       <h3 className="text-slate-400 text-[10px] font-black uppercase tracking-[0.2em] mb-4">${title}</h3>\n       <div style={{ width: '100%', height: 350 }}>\n       <ResponsiveContainer width="100%" height="100%">\n        <PieChart>\n          <Pie data={${renderData}} dataKey="${values[0]?.name}" nameKey="${xAxis}" cx="50%" cy="50%" innerRadius={${isDonut ? 65 : 0}} outerRadius={85} paddingAngle={4} stroke="none" label={{fontSize: 9, fill: '#64748b'}}>\n            {processedData.map((_, i) => <Cell key={i} fill={colors[i % colors.length]} />)}\n          </Pie>\n          <Tooltip contentStyle={{borderRadius: '16px', border: 'none', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)'}} />\n          <Legend verticalAlign="bottom" align="center" iconType="circle" wrapperStyle={{fontSize: '9px', paddingTop: '20px'}} />\n        </PieChart>\n      </ResponsiveContainer>\n      </div>\n    </div>\n  );\n}`;
-    } else if (type === 'matrix') {
-      const rowKey = xAxis || (activeTab?.columns[0]);
-      const colKey = cols[0] || (activeTab?.columns[1]);
-      const valKey = values[0]?.name || (activeTab?.columns[2]);
-      const aggType = values[0]?.agg || 'sum';
-      
-      generated = `function Chart() {\n  const matrixData = React.useMemo(function() {\n    if (!data || data.length === 0) return { rows: [], cols: [], cells: {} };\n    const rs = [...new Set(data.map(function(r){ return r["${rowKey}"]; }))].filter(Boolean).sort();\n    const cs = [...new Set(data.map(function(r){ return r["${colKey}"]; }))].filter(Boolean).sort();\n    const cls = {};\n    data.forEach(function(r) {\n      const k = r["${rowKey}"] + "||" + r["${colKey}"];\n      const val = parseFloat(r["${valKey}"]) || 0;\n      if (!cls[k]) cls[k] = { val: 0, count: 0 };\n      cls[k].val += val;\n      cls[k].count += 1;\n    });\n    return { rows: rs, cols: cs, cells: cls };\n  }, [data]);\n\n  return (\n    <div className="w-full h-full overflow-hidden flex flex-col p-1">\n      <h3 className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-3">${title}</h3>\n      <div className="flex-1 overflow-auto border rounded-2xl bg-white/50 backdrop-blur-sm shadow-inner">\n        <table className="w-full text-[10px] border-collapse bg-white/40">\n          <thead className="sticky top-0 z-20">\n            <tr className="bg-slate-100/90 backdrop-blur-md">\n              <th className="p-3 border-b border-r bg-slate-200/50 text-slate-500 font-black uppercase text-[9px] sticky left-0 z-30">${rowKey} / ${colKey}</th>\n              {matrixData.cols.map(function(col){ return <th key={col} className="p-3 border-b border-r text-indigo-600 font-bold min-w-[80px] text-center">{col}</th>; })}\n            </tr>\n          </thead>\n          <tbody className="divide-y divide-slate-100">\n            {matrixData.rows.map(function(row){ return (\n              <tr key={row} className="hover:bg-indigo-50/20 transition-colors">\n                <td className="p-3 border-r font-bold bg-slate-50/80 sticky left-0 z-10 text-slate-700 min-w-[120px] shadow-[2px_0_4px_rgba(0,0,0,0.02)]">{row}</td>\n                {matrixData.cols.map(function(col){ \n                  const cell = matrixData.cells[row + "||" + col];\n                  const displayVal = !cell ? "-" : (${aggType === 'avg' ? 'cell.val / cell.count' : aggType === 'count' ? 'cell.count' : 'cell.val'});\n                  return <td key={col} className="p-3 border-r text-center text-slate-600 tabular-nums font-medium">\n                    {typeof displayVal === 'number' ? displayVal.toLocaleString(undefined, {maximumFractionDigits:1}) : displayVal}\n                  </td>; \n                })}\n              </tr>\n            ); })}\n          </tbody>\n        </table>\n      </div>\n    </div>\n  );\n}`;
-    } else if (type === 'slicer') {
-      const filterCol = xAxis || (activeTab?.columns[0]);
-      generated = `function Chart() {\n  const options = [...new Set(data.map(function(r){ return r["${filterCol}"]; }))].filter(Boolean).sort();\n  return (\n    <div className="w-full h-full flex flex-col p-2 bg-indigo-50/20 rounded-2xl border border-indigo-100/50">\n      <h3 className="text-indigo-600 text-[10px] font-black uppercase tracking-widest mb-3 flex items-center gap-2">🔍 ${filterCol}</h3>\n      <div className="flex-1 overflow-y-auto space-y-1 pr-2 scrollbar-thin scrollbar-thumb-indigo-200">\n        {options.map(function(opt){ return (\n          <label key={opt} className="flex items-center gap-2 p-2 hover:bg-white rounded-lg cursor-pointer transition-all group border border-transparent hover:border-indigo-100 hover:shadow-sm">\n            <input type="checkbox" className="w-3 h-3 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" />\n            <span className="text-[11px] text-slate-600 group-hover:text-indigo-600 truncate font-semibold">{opt}</span>\n          </label>\n        ); })}\n      </div>\n    </div>\n  );\n}`;
-    }
-
-    if (generated) {
-      patchTab(activeTabId!, { code: generated });
-    }
+    const columns = activeTab?.columns || [];
+    const generated = generateChartCode(type, mapping, columns, title);
+    if (generated) patchTab(activeTabId, { code: generated });
   };
 
   // ── API helper ────────────────────────────────────────────────────────
@@ -341,12 +307,21 @@ export default function DevDashboard() {
   // Connection CRUD
   // ─────────────────────────────────────────────────────────────────────
   const saveConn = () => {
-    if (!connForm.name || !connForm.host || !connForm.database) return;
+    const missing = [];
+    if (!connForm.name) missing.push('Nombre');
+    if (!connForm.host) missing.push('Servidor');
+    if (!connForm.database) missing.push('Base de Datos');
+    if (missing.length > 0) {
+      setConnTestMsg({ ok: false, msg: `Completa los campos: ${missing.join(', ')}` });
+      return;
+    }
     const c = { ...connForm, id: `conn-${Date.now()}` };
     saveDevSource(c);
     setConnForm({ name: "", host: "localhost", database: "", username: "sa", password: "" });
     setConnTestMsg(null);
     setShowAddConn(false);
+    // Auto-load tables for the new connection right away
+    setTimeout(() => loadTables(c), 250);
   };
 
   const deleteConn = (id: string) => {
@@ -381,17 +356,27 @@ export default function DevDashboard() {
     setLoadingTables(null);
   };
 
-  // ─────────────────────────────────────────────────────────────────────
-  // Select table → load columns
-  // ─────────────────────────────────────────────────────────────────────
   const selectTable = async (conn: Connection, schema: string, table: string) => {
-    setSelectedTable({ conn, schema, table });
-    setLoadingCols(true); setSelectedColumns([]);
+    if (trackedTables.find(t => t.table === table)) {
+      alert(`La tabla ${table} ya ha sido agregada a la barra lateral.`);
+      return;
+    }
+    setLoadingCols(true);
     try {
       const d = await apiFetch("/api/columns", { host: conn.host, database: conn.database, username: conn.username, password: conn.password, schema, table });
-      if (d.success) setSelectedColumns(d.columns);
+      if (d.success) {
+        setTrackedTables(prev => [...prev, { conn, schema, table, columns: d.columns, isExpanded: true }]);
+      }
     } catch { /**/ }
     setLoadingCols(false);
+  };
+
+  const toggleTrackedTable = (table: string) => {
+    setTrackedTables(prev => prev.map(t => t.table === table ? { ...t, isExpanded: !t.isExpanded } : t));
+  };
+  
+  const removeTrackedTable = (table: string) => {
+    setTrackedTables(prev => prev.filter(t => t.table !== table));
   };
 
   // ─────────────────────────────────────────────────────────────────────
@@ -701,6 +686,29 @@ export default function DevDashboard() {
             <span className="font-bold text-sm">DataCanvas O.S.</span>
             <span className="text-[10px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded border border-indigo-500/30 uppercase tracking-wider">DEV</span>
           </div>
+
+          {(viewMode === 'main' || viewMode === 'basico') && (
+            <div className={`flex items-center p-0.5 bg-slate-200/50 dark:bg-slate-800/50 rounded-lg border ${theme.border}`}>
+              <button 
+                onClick={() => setWorkspaceMode('graphic')}
+                className={`flex items-center gap-1.5 px-3 py-1 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${workspaceMode === 'graphic' ? 'bg-white text-indigo-500 shadow-sm' : `text-slate-500 ${theme.hover}`}`}
+              >
+                <LayoutDashboard className="w-3.5 h-3.5" /> Gráfica
+              </button>
+              <button 
+                onClick={() => setWorkspaceMode('code')}
+                className={`flex items-center gap-1.5 px-3 py-1 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${workspaceMode === 'code' ? 'bg-white text-emerald-500 shadow-sm' : `text-slate-500 ${theme.hover}`}`}
+              >
+                <Code2 className="w-3.5 h-3.5" /> Código JSX
+              </button>
+              <button 
+                onClick={() => setWorkspaceMode('relations')}
+                className={`flex items-center gap-1.5 px-3 py-1 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${workspaceMode === 'relations' ? 'bg-white text-orange-500 shadow-sm' : `text-slate-500 ${theme.hover}`}`}
+              >
+                <Database className="w-3.5 h-3.5" /> Relaciones
+              </button>
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <span className={`text-xs ${theme.muted} hidden sm:block`}>{user?.firstName} {user?.lastName}</span>
@@ -734,9 +742,16 @@ export default function DevDashboard() {
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden relative">
+        <button 
+          onClick={() => setShowLeftPanel(!showLeftPanel)}
+          className={`absolute top-1/2 -translate-y-1/2 z-20 w-4 h-12 flex items-center justify-center border ${theme.border} rounded-r-md shadow-md ${theme.surface} ${theme.text} hover:text-indigo-500 transition-all duration-300 ${showLeftPanel ? 'left-60' : 'left-0'}`}
+        >
+          <ChevronRight className={`w-3 h-3 transition-transform duration-300 ${showLeftPanel ? 'rotate-180' : ''}`} />
+        </button>
+
         {/* ── LEFT: Explorer ──────────────────────────────────────────── */}
-        <aside className={`w-60 ${theme.surface} ${theme.border} border-r flex flex-col overflow-hidden shrink-0`}>
+        <aside className={`flex flex-col shrink-0 transition-all duration-300 overflow-hidden ${showLeftPanel ? 'w-60 opacity-100' : 'w-0 opacity-0'} ${theme.surface} ${theme.border} border-r`}>
           <div className={`flex items-center justify-between px-3 py-2 ${theme.border} border-b shrink-0`}>
             <span className={`text-[10px] font-bold ${theme.muted} uppercase tracking-wider`}>Bases de Datos</span>
             <button onClick={() => setShowAddConn(true)} className="text-indigo-400 hover:text-indigo-300 transition"><Plus className="w-4 h-4" /></button>
@@ -783,7 +798,7 @@ export default function DevDashboard() {
                     <div key={schema} className="ml-3">
                       <div className={`px-2 py-0.5 text-[9px] ${theme.muted} uppercase tracking-widest font-bold opacity-60`}>{schema}</div>
                       {sTables.map(tbl => {
-                        const isSel = selectedTable?.table === tbl.TABLE_NAME && selectedTable?.schema === tbl.TABLE_SCHEMA && selectedTable?.conn.id === conn.id;
+                        const isSel = trackedTables.some(t => t.table === tbl.TABLE_NAME && t.schema === tbl.TABLE_SCHEMA && t.conn.id === conn.id);
                         return (
                           <button
                             key={tbl.TABLE_NAME}
@@ -792,7 +807,7 @@ export default function DevDashboard() {
                             }`}
                             onClick={() => selectTable(conn, tbl.TABLE_SCHEMA, tbl.TABLE_NAME)}
                             onDoubleClick={() => openTab(conn, tbl.TABLE_SCHEMA, tbl.TABLE_NAME)}
-                            title="Click: columnas | Doble clic: abrir datos"
+                            title="Click: Añadir | Doble clic: Ejecutar consulta"
                           >
                             <Table2 className="w-3 h-3 text-emerald-500 shrink-0" />
                             <span className="text-xs truncate flex-1">{tbl.TABLE_NAME}</span>
@@ -867,12 +882,67 @@ export default function DevDashboard() {
                 </div>
               )}
 
-              <div className="flex-1 flex overflow-hidden">
+              <div className="flex-1 flex overflow-hidden relative">
+                
+                {/* ─ RELATIONS MODE ─ */}
+                {workspaceMode === 'relations' && (
+                  <div className="absolute inset-0 z-20">
+                    <RelationCanvas 
+                      nodes={relNodes} 
+                      edges={relEdges} 
+                      onNodesChange={setRelNodes} 
+                      onEdgesChange={setRelEdges}
+                      dark={dark}
+                    />
+                  </div>
+                )}
+                
+                {/* ─ CODE MODE ─ */}
+                {workspaceMode === 'code' && (
+                  <div className={`absolute inset-0 z-20 flex flex-col ${dark ? 'bg-[#0d1117]' : 'bg-[#f8fafc]'}`}>
+                     <div className={`h-12 ${theme.surface} ${theme.border} border-b flex items-center justify-between px-5 shadow-sm`}>
+                        <span className={`text-[11px] font-black uppercase tracking-widest flex items-center gap-2 ${dark ? 'text-emerald-400' : 'text-emerald-600'}`}>
+                          <Code2 className="w-4 h-4" /> Intérprete React / JSX
+                        </span>
+                        <div className="flex gap-2">
+                           <button onClick={runCode} className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-1.5 rounded-lg font-bold flex items-center gap-2 transition shadow-md shadow-emerald-500/20 active:scale-95">
+                             <Play className="w-3.5 h-3.5" /> Renderizar
+                           </button>
+                           <button onClick={() => saveComponent(activeTab)} className={`text-xs ${dark ? 'bg-slate-700 hover:bg-slate-600 text-slate-200' : 'bg-slate-200 hover:bg-slate-300 text-slate-700'} px-4 py-1.5 rounded-lg font-bold flex items-center gap-2 transition`}>
+                             <Save className="w-3.5 h-3.5" /> Guardar Script
+                           </button>
+                        </div>
+                     </div>
+                     <div className="flex-1 flex overflow-hidden">
+                       <div className="flex-[3] border-r border-slate-700 relative">
+                         <SyntaxHighlighter code={activeTab.code} onChange={code => patchTab(activeTabId!, { code })} dark={dark} />
+                       </div>
+                       <div className={`flex-[2] ${dark ? 'bg-[#06090f]' : 'bg-slate-100'} overflow-hidden flex flex-col`}>
+                         <div className={`h-8 ${theme.surface} ${theme.border} border-b flex items-center px-3 shrink-0`}>
+                           <span className={`text-[10px] font-bold ${theme.muted} uppercase tracking-wider flex items-center gap-1`}><BarChart3 className="w-3 h-3" /> Live Preview</span>
+                         </div>
+                         <div className="flex-1 overflow-hidden relative p-4">
+                           <div className={`w-full h-full border ${theme.border} rounded-xl ${theme.surface} shadow-sm overflow-hidden flex flex-col`}>
+                             <ChartPreview code={activeTab.code} rows={activeTab.rows} columns={activeTab.columns} dark={dark} autoRender={renderCounter > 0} key={`${activeTab.id}-${renderCounter}`} />
+                           </div>
+                         </div>
+                       </div>
+                     </div>
+                  </div>
+                )}
+                
+                {/* ─ GRAPHIC MODE ─ */}
+                <div className={`flex-1 flex overflow-hidden transition-opacity duration-300 ${workspaceMode === 'graphic' ? 'opacity-100 relative z-10' : 'opacity-0 absolute inset-0 pointer-events-none'}`}>
                 {/* Data Grid */}
-                <div className="flex-1 flex flex-col overflow-hidden">
-                  <div className={`h-7 ${theme.surface} ${theme.border} border-b flex items-center px-3 gap-3 shrink-0`}>
-                    <span className={`text-[10px] font-bold ${theme.muted} uppercase tracking-wider`}>Resultados</span>
-                    {activeTab.queryRan && <span className="text-[10px] text-emerald-500 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> {activeTab.rows.length} filas · {activeTab.columns.length} cols</span>}
+                <div className={`${showDataGrid ? 'flex-1' : 'w-0 opacity-0 border-none'} flex flex-col overflow-hidden transition-all duration-300`}>
+                  <div className={`h-7 ${theme.surface} ${theme.border} border-b flex items-center px-3 gap-3 shrink-0 justify-between`}>
+                    <div className="flex items-center gap-3">
+                      <span className={`text-[10px] font-bold ${theme.muted} uppercase tracking-wider`}>Resultados</span>
+                      {activeTab.queryRan && <span className="text-[10px] text-emerald-500 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> {activeTab.rows.length} filas</span>}
+                    </div>
+                    <button onClick={() => setShowDataGrid(false)} className={`text-[9px] font-bold uppercase tracking-widest ${theme.muted} hover:text-indigo-400 transition flex items-center gap-1`}>
+                      Contraer <Columns3 className="w-3 h-3" />
+                    </button>
                   </div>
                   <div className="flex-1 overflow-auto bg-white">
                     {!activeTab.queryRan && !activeTab.loading ? (
@@ -907,7 +977,7 @@ export default function DevDashboard() {
                 </div>
 
                 {/* Code + Preview */}
-                <div className={`w-[44%] flex flex-col ${theme.bg} ${theme.border} border-l overflow-hidden shrink-0 relative`}>
+                <div className={`${showDataGrid ? 'w-[44%] shrink-0 border-l' : 'flex-1'} flex flex-col ${theme.bg} ${theme.border} overflow-hidden relative transition-all duration-300`}>
                   {/* VISUAL MAPPER OVERLAY (POWER BI STYLE) */}
                   {activeVisualType && (
                     <div className={`p-3 border-b ${theme.border} ${theme.surface} animate-in slide-in-from-top duration-300 z-10 shadow-xl`}>
@@ -927,141 +997,84 @@ export default function DevDashboard() {
                          </button>
                       </div>
 
-                      <div className="flex flex-col gap-3">
-                        {/* Slots Row 1 */}
-                        <div className="flex flex-wrap gap-4">
-                          {/* Slot X / Filas */}
-                          {(activeVisualType!=='card') && (
-                            <div className="flex-1 min-w-[150px] flex flex-col gap-1.5">
-                              <label className="text-[8px] font-black uppercase tracking-widest opacity-40">
-                                {activeVisualType==='table' ? 'Filas (Agrupación)' : 'Categoría (Eje X)'}
+                      <div className="grid grid-cols-2 gap-3 max-h-[160px] overflow-y-auto pr-2">
+                        {VISUAL_DEFINITIONS[activeVisualType]?.slots.map((slot) => {
+                          const items = visualMapping[slot.id] || [];
+                          return (
+                            <div key={slot.id} className="flex flex-col gap-1.5 p-2 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-800">
+                              <label className="text-[9px] font-black uppercase tracking-widest opacity-60 text-indigo-600 dark:text-indigo-400">
+                                {slot.label} {slot.type==='value'?'(Medida)':'(Categoría)'}
                               </label>
                               <div 
                                 onDragOver={e => e.preventDefault()}
                                 onDrop={e => {
                                   e.preventDefault();
-                                  const col = e.dataTransfer.getData("colName");
-                                  const next = { ...visualMapping, xAxis: col, rows: [...new Set([...visualMapping.rows, col])] };
+                                  const colName = e.dataTransfer.getData("colName");
+                                  const existing = visualMapping[slot.id] || [];
+                                  if (existing.find(i => i.name === colName)) return; // prevent dupes
+                                  
+                                  const newItem: VisualSlotItem = { name: colName, agg: slot.type === 'value' ? 'sum' : 'none' };
+                                  const next = { ...visualMapping, [slot.id]: [...existing, newItem] };
                                   setVisualMapping(next);
-                                  updateGeneratedCode(activeVisualType!, next);
+                                  updateGeneratedCode(activeVisualType, next);
                                 }}
-                                className={`h-11 border-2 border-dashed rounded-xl flex items-center justify-center transition-all ${
-                                  visualMapping.xAxis ? 'bg-indigo-600/10 border-indigo-500/50 shadow-inner' : 'border-slate-700/30 hover:border-indigo-400/30'
+                                className={`min-h-[36px] mt-1 border-2 border-dashed rounded-lg flex flex-wrap items-center gap-1.5 p-1.5 transition-all ${
+                                  items.length > 0 ? 'border-transparent bg-white dark:bg-slate-900 shadow-sm' : 'border-slate-300/60 dark:border-slate-700/60 hover:border-indigo-400/40'
                                 }`}
                               >
-                                {visualMapping.xAxis ? (
-                                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-indigo-600 rounded-lg text-white text-[9px] font-black animate-in zoom-in duration-200 shadow-lg shadow-indigo-600/30">
-                                    {visualMapping.xAxis} <button className="hover:text-red-300 transition" onClick={() => {
-                                      const next = {...visualMapping, xAxis: '', rows: []};
+                                {items.length === 0 && <span className="text-[9px] opacity-40 font-bold uppercase tracking-widest pl-1">Soltar Campo</span>}
+                                {items.map((item, idx) => (
+                                  <div key={item.name+idx} className="flex items-center gap-1.5 px-2 py-1 bg-indigo-50 dark:bg-indigo-600/10 border border-indigo-200 dark:border-indigo-500/30 rounded text-slate-700 dark:text-indigo-200 text-[10px] font-bold group w-full">
+                                    <div className="flex-1 truncate leading-none py-0.5">{item.name}</div>
+                                    
+                                    {slot.type === 'value' && (
+                                      <select 
+                                        className="bg-transparent border-none outline-none cursor-pointer text-indigo-500 dark:text-indigo-400 font-black tracking-widest text-[9px] uppercase hover:bg-indigo-500/10 rounded px-1 min-w-min"
+                                        title="Función de Agrupación"
+                                        value={item.agg}
+                                        onChange={e => {
+                                          const nextItems = [...items];
+                                          nextItems[idx] = { ...item, agg: e.target.value as any };
+                                          const next = { ...visualMapping, [slot.id]: nextItems };
+                                          setVisualMapping(next);
+                                          updateGeneratedCode(activeVisualType, next);
+                                        }}
+                                      >
+                                        <option value="sum" className="text-slate-900">SUM</option>
+                                        <option value="avg" className="text-slate-900">AVG</option>
+                                        <option value="count" className="text-slate-900">CNT</option>
+                                        <option value="min" className="text-slate-900">MIN</option>
+                                        <option value="max" className="text-slate-900">MAX</option>
+                                        <option value="none" className="text-slate-900"> - </option>
+                                      </select>
+                                    )}
+
+                                    <button className="opacity-40 hover:opacity-100 text-red-500 hover:bg-red-500/10 shrink-0 p-0.5 rounded transition" onClick={() => {
+                                      const next = {...visualMapping, [slot.id]: items.filter((_,i)=>i!==idx)};
                                       setVisualMapping(next);
-                                      updateGeneratedCode(activeVisualType!, next);
-                                    }}>×</button>
+                                      updateGeneratedCode(activeVisualType, next);
+                                    }}><X className="w-3 h-3" /></button>
                                   </div>
-                                ) : <span className="text-[9px] opacity-20 font-bold uppercase tracking-tighter">Soltar Campo</span>}
+                                ))}
                               </div>
                             </div>
-                          )}
-
-                          {/* Slot Y / Columnas / Valores Card */}
-                          <div className="flex-1 min-w-[200px] flex flex-col gap-1.5">
-                            <label className="text-[8px] font-black uppercase tracking-widest opacity-40">
-                              {activeVisualType==='table' ? 'Columnas / Medidas' : (activeVisualType==='card' ? 'Campo de Valor' : 'Valor Principal (Eje Y)')}
-                            </label>
-                            <div 
-                              onDragOver={e => e.preventDefault()}
-                              onDrop={e => {
-                                e.preventDefault();
-                                const col = e.dataTransfer.getData("colName");
-                                const next = { ...visualMapping, yAxis: col, values: [...visualMapping.values, { name: col, agg: 'sum' as const }] };
-                                setVisualMapping(next);
-                                updateGeneratedCode(activeVisualType!, next);
-                              }}
-                              className={`min-h-[44px] border-2 border-dashed rounded-xl flex flex-wrap items-center gap-2 p-2 transition-all ${
-                                visualMapping.values.length > 0 ? 'bg-emerald-600/5 border-emerald-500/30 shadow-inner' : 'border-slate-700/30 hover:border-emerald-400/30'
-                              }`}
-                            >
-                              {visualMapping.values.length === 0 && <span className="text-[9px] opacity-20 font-bold uppercase tracking-tighter mx-auto">Configura Medidas</span>}
-                              {visualMapping.values.map((v, idx) => (
-                                <div key={v.name+idx} className="group relative flex items-center gap-1.5 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-white text-[9px] font-bold animate-in zoom-in duration-200">
-                                  <div className="flex flex-col items-start leading-none gap-0.5">
-                                    <span className="text-[7px] text-emerald-400 uppercase font-black">{v.agg}</span>
-                                    <span>{v.name}</span>
-                                  </div>
-                                  
-                                  {/* Aggregation Switcher Bubble */}
-                                  <div className="flex gap-1 ml-1 scale-90 origin-left">
-                                    {['sum', 'avg', 'count'].map(a => (
-                                      <button 
-                                        key={a}
-                                        onClick={() => {
-                                          const nextValues = [...visualMapping.values];
-                                          nextValues[idx] = { ...nextValues[idx], agg: a as any };
-                                          const next = { ...visualMapping, values: nextValues };
-                                          setVisualMapping(next);
-                                          updateGeneratedCode(activeVisualType!, next);
-                                        }}
-                                        className={`w-4 h-4 rounded-full flex items-center justify-center text-[6px] font-black uppercase transition-all ${
-                                          v.agg === a ? 'bg-emerald-500 text-white' : 'bg-slate-700 text-slate-400 hover:text-white'
-                                        }`}
-                                      >
-                                        {a[0]}
-                                      </button>
-                                    ))}
-                                  </div>
-
-                                  <button className="ml-1 opacity-40 hover:opacity-100 hover:text-red-400" onClick={() => {
-                                    const next = {...visualMapping, values: visualMapping.values.filter((_,i)=>i!==idx)};
-                                    setVisualMapping(next);
-                                    updateGeneratedCode(activeVisualType!, next);
-                                  }}>×</button>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Additional Series (Charts only) */}
-                        {(activeVisualType==='bar' || activeVisualType==='line' || activeVisualType==='area') && visualMapping.values.length > 0 && (
-                          <p className="text-[8px] text-indigo-400 font-bold leading-tight opacity-60 px-1">
-                             💡 Arrastra más campos a "Valor Principal" para comparar múltiples series de datos.
-                          </p>
-                        )}
+                          );
+                        })}
                       </div>
 
                     </div>
                   )}
-                  {/* Editor */}
-                  <div className={`flex-1 flex flex-col overflow-hidden ${theme.border} border-b`}>
-                    <div className={`h-7 ${theme.surface} ${theme.border} border-b flex items-center justify-between px-3 shrink-0`}>
-                      <span className={`text-[10px] font-bold ${theme.muted} uppercase tracking-wider flex items-center gap-1`}>
-                        <Code2 className="w-3 h-3" /> React / Recharts JSX
-                      </span>
-                      <div className="flex gap-1.5">
-                        <button onClick={runCode}
-                          className="text-[10px] bg-emerald-600 hover:bg-emerald-500 text-white px-2 py-0.5 rounded font-bold flex items-center gap-1 transition">
-                          <Play className="w-2.5 h-2.5" /> Renderizar
-                        </button>
-                        <button onClick={() => saveComponent(activeTab)}
-                          className={`text-[10px] ${dark ? 'bg-slate-700 hover:bg-slate-600 text-slate-200' : 'bg-slate-200 hover:bg-slate-300 text-slate-700'} px-2 py-0.5 rounded font-bold flex items-center gap-1 transition`}>
-                          <Save className="w-2.5 h-2.5" /> Guardar
-                        </button>
-                      </div>
-                    </div>
-                    <textarea
-                      className={`flex-1 ${theme.code} text-emerald-400 font-mono text-[11px] p-3 resize-none focus:outline-none leading-relaxed`}
-                      value={activeTab.code}
-                      onChange={e => patchTab(activeTabId!, { code: e.target.value })}
-                      spellCheck={false}
-                    />
-                  </div>
 
-                  {/* Preview */}
-                  <div className={`h-[42%] flex flex-col shrink-0 overflow-hidden`}>
-                    <div className={`h-7 ${theme.surface} ${theme.border} border-b flex items-center px-3 shrink-0`}>
-                      <span className={`text-[10px] font-bold ${theme.muted} uppercase tracking-wider flex items-center gap-1`}>
-                        <BarChart3 className="w-3 h-3" /> Preview
-                      </span>
+                  {!showDataGrid && (
+                    <div className="absolute top-2 left-2 z-20">
+                      <button onClick={() => setShowDataGrid(true)} className="bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg p-2 shadow-lg transition flex items-center gap-2 text-xs font-bold">
+                        <Columns3 className="w-4 h-4" /> Mostrar Datos
+                      </button>
                     </div>
+                  )}
+
+                  {/* Preview (Maximized in Graphic Mode) */}
+                  <div className="flex-1 flex flex-col shrink-0 overflow-hidden relative">
                     <ChartPreview
                       code={activeTab.code}
                       rows={activeTab.rows}
@@ -1072,13 +1085,22 @@ export default function DevDashboard() {
                     />
                   </div>
                 </div>
+                </div>
               </div>
             </div>
           )}
         </div>
 
-                {/* Column Inspector */}
-                <aside className={`w-56 ${theme.surface} ${theme.border} border-l flex flex-col overflow-hidden shrink-0`}>
+        {/* Toggle Right Panel Button */}
+        <button 
+          onClick={() => setShowRightPanel(!showRightPanel)}
+          className={`absolute top-1/2 -translate-y-1/2 z-20 w-4 h-12 flex items-center justify-center border ${theme.border} rounded-l-md shadow-md ${theme.surface} ${theme.text} hover:text-indigo-500 transition-all duration-300 ${showRightPanel ? 'right-56' : 'right-0'}`}
+        >
+          <ChevronLeft className={`w-3 h-3 transition-transform duration-300 ${showRightPanel ? 'rotate-180' : ''}`} />
+        </button>
+
+        {/* Column Inspector */}
+        <aside className={`flex flex-col shrink-0 transition-all duration-300 overflow-hidden ${showRightPanel ? 'w-56 opacity-100' : 'w-0 opacity-0'} ${theme.surface} ${theme.border} border-l`}>
                   {/* Power BI Style Visuals Panel */}
                   <div className={`p-3 border-b ${theme.border}`}>
                     <span className={`text-[10px] font-bold ${theme.muted} uppercase tracking-wider block mb-3`}>Visuales (Templates)</span>
@@ -1101,7 +1123,7 @@ export default function DevDashboard() {
                             onClick={() => {
                               if (!activeTab) return;
                               setActiveVisualType(v.id);
-                              const fresh = { xAxis: '', yAxis: '', rows: [], cols: [], values: [], legend: '' };
+                              const fresh = getEmptyMapping();
                               setVisualMapping(fresh);
                               updateGeneratedCode(v.id, fresh);
                             }}
@@ -1117,51 +1139,71 @@ export default function DevDashboard() {
                      </div>
                   </div>
 
-                  <div className={`px-3 py-2 ${theme.border} border-b shrink-0 flex items-center justify-between`}>
-                    <span className={`text-[10px] font-bold ${theme.muted} uppercase tracking-wider truncate flex-1`}>
-                      {selectedTable ? `${selectedTable.schema}.${selectedTable.table}` : "Columnas"}
-                    </span>
-                    {selectedTable && (
-                      <button onClick={() => openTab(selectedTable.conn, selectedTable.schema, selectedTable.table)}
-                        className="text-[10px] bg-indigo-600 hover:bg-indigo-500 text-white px-2 py-0.5 rounded transition ml-1 shrink-0">↗</button>
-                    )}
-                  </div>
-
-                  <div className="flex-1 overflow-y-auto">
-                    {!selectedTable && viewMode === 'main' && (
+                  <div className="flex-1 overflow-y-auto space-y-2 p-2">
+                    {trackedTables.length === 0 && viewMode === 'main' && (
                       <div className="p-4 text-center">
                         <Columns3 className={`w-8 h-8 mx-auto mb-2 opacity-20 ${theme.muted}`} />
-                        <p className={`text-[11px] ${theme.muted} italic`}>Selecciona una tabla</p>
+                        <p className={`text-[11px] ${theme.muted} italic`}>Selecciona tablas de la izquierda</p>
                       </div>
                     )}
-                    {loadingCols && <div className="flex justify-center pt-6"><Loader2 className="w-5 h-5 animate-spin text-indigo-400" /></div>}
-                    {selectedColumns.map((col, i) => (
-                      <div 
-                        key={i} 
-                        draggable
-                        onDragStart={e => {
-                          e.dataTransfer.setData("colName", col.COLUMN_NAME);
-                          setIsDragging(true);
-                        }}
-                        onDragEnd={() => setIsDragging(false)}
-                        onClick={() => {
-                          if (activeTabId) {
-                            const current = activeTab?.code || "";
-                            patchTab(activeTabId, { code: current + ` "${col.COLUMN_NAME}"` });
-                          }
-                        }}
-                        className={`flex items-center gap-2 px-3 py-1.5 text-xs ${theme.hover} transition cursor-grab border-b ${theme.border} group active:cursor-grabbing hover:bg-indigo-600/5`}
-                      >
-                        <Columns3 className={`w-3 h-3 shrink-0 ${theme.muted} opacity-50 group-hover:text-indigo-400 group-hover:opacity-100`} />
-                        <div className="flex-1 min-w-0">
-                          <div className={`truncate font-medium text-xs ${theme.text} group-hover:text-indigo-400 transition-colors`}>{col.COLUMN_NAME}</div>
-                          <div className={`text-[10px] ${typeColor(col.DATA_TYPE)}`}>{col.DATA_TYPE}</div>
-                        </div>
-                        <div className="opacity-0 group-hover:opacity-100 text-[10px] text-indigo-400 translate-x-1 group-hover:translate-x-0 transition-all">
-                           <LayoutDashboard className="w-3 h-3" />
+                    {loadingCols && <div className="flex justify-center py-2"><Loader2 className="w-5 h-5 animate-spin text-indigo-400" /></div>}
+                    {trackedTables.length > 0 && (
+                      <div className="flex flex-col gap-2 p-2 pb-0 shrink-0">
+                        <input
+                          type="text"
+                          placeholder="Buscar columna en tablas..."
+                          className={`w-full ${theme.input} border rounded-lg px-3 py-1.5 text-[11px] focus:border-indigo-500 focus:outline-none`}
+                          value={rightPanelSearch}
+                          onChange={e => setRightPanelSearch(e.target.value)}
+                        />
+                        <div className="flex gap-2">
+                           <button onClick={() => setTrackedTables(p => p.map(t => ({...t, isExpanded: true})))} className={`flex-1 text-[9px] uppercase tracking-widest font-bold py-1 rounded bg-slate-500/10 hover:bg-slate-500/20 text-slate-500 transition`}>Expandir</button>
+                           <button onClick={() => setTrackedTables(p => p.map(t => ({...t, isExpanded: false})))} className={`flex-1 text-[9px] uppercase tracking-widest font-bold py-1 rounded bg-slate-500/10 hover:bg-slate-500/20 text-slate-500 transition`}>Contraer</button>
                         </div>
                       </div>
-                    ))}
+                    )}
+                    
+                    {trackedTables.map(t => {
+                      const filteredCols = t.columns.filter(c => c.COLUMN_NAME.toLowerCase().includes(rightPanelSearch.toLowerCase()));
+                      if (rightPanelSearch && filteredCols.length === 0) return null; // Hide table if no columns match
+
+                      return (
+                      <div key={t.table} className={`rounded-xl border shadow-sm overflow-hidden ${theme.border} ${theme.surface}`}>
+                        <div className={`px-2 py-2 flex items-center justify-between cursor-pointer hover:bg-slate-500/5 transition`} onClick={() => toggleTrackedTable(t.table)}>
+                          <div className="flex flex-col">
+                             <span className="text-xs font-bold text-indigo-500 truncate">{t.schema}.{t.table}</span>
+                             <span className={`text-[9px] ${theme.muted}`}>{t.columns.length} columnas</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                             <button onClick={(e) => { e.stopPropagation(); openTab(t.conn, t.schema, t.table); }} title="Consultar" className="text-[10px] bg-indigo-600/10 text-indigo-500 hover:bg-indigo-600 hover:text-white px-1.5 py-0.5 rounded transition">↗</button>
+                             <button onClick={(e) => { e.stopPropagation(); removeTrackedTable(t.table); }} className="text-red-400 hover:text-red-500 p-0.5"><X className="w-3.5 h-3.5" /></button>
+                          </div>
+                        </div>
+                        {t.isExpanded && (
+                          <div className="border-t border-slate-500/10 max-h-64 overflow-y-auto">
+                            {filteredCols.map((col, i) => (
+                              <div
+                                key={i}
+                                draggable
+                                onDragStart={e => { e.dataTransfer.setData("colName", col.COLUMN_NAME); setIsDragging(true); }}
+                                onDragEnd={() => setIsDragging(false)}
+                                onClick={() => {
+                                  if (activeTabId) patchTab(activeTabId, { code: (activeTab?.code || "") + ` "${col.COLUMN_NAME}"` });
+                                }}
+                                className={`flex items-center gap-2 px-3 py-1.5 text-[11px] hover:bg-indigo-600/5 transition cursor-grab border-b last:border-b-0 border-slate-500/10 group`}
+                              >
+                                <Columns3 className={`w-3 h-3 shrink-0 ${theme.muted} opacity-50`} />
+                                <div className="flex-1 min-w-0">
+                                  <div className={`truncate font-medium group-hover:text-indigo-500 transition-colors`}>{col.COLUMN_NAME}</div>
+                                  <div className={`text-[9px] opacity-70 ${typeColor(col.DATA_TYPE)}`}>{col.DATA_TYPE}</div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                   </div>
 
           {/* Saved Components list (BANCO DE GRÁFICOS) */}
