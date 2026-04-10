@@ -3,27 +3,66 @@ import cors from 'cors';
 import sql from 'mssql';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+dotenv.config({ path: path.join(__dirname, '.env') });
 
 const app = express();
 app.use(cors({ origin: '*' }));
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// Prevent API from dying on unhandled errors
+process.on('uncaughtException', (err) => {
+  console.error('❌ Uncaught Exception (API kept alive):', err.message);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('❌ Unhandled Rejection (API kept alive):', reason);
+});
 
 // ── Database Configuration & Initialization ────────────────────────────────
 const dbConfig = {
-  user: process.env.DB_USER || 'sa',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'ATRAnalytics',
-  server: process.env.DB_HOST || 'localhost',
-  pool: { max: 10, min: 0, idleTimeoutMillis: 30000 },
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  server: process.env.DB_HOST,
+  pool: {
+    max: 500, // Ultra-High Concurrency
+    min: 0,   // Safe boot
+    idleTimeoutMillis: 60000,
+    acquireTimeoutMillis: 30000
+  },
   options: {
     encrypt: false,
     trustServerCertificate: true,
+    connectTimeout: 30000,
+    requestTimeout: 120000, // 2 minutes for heavy analytics
+    enableArithAbort: true
   },
 };
 
 const sysPool = new sql.ConnectionPool(dbConfig);
+// Prevent pool errors from crashing the process
+sysPool.on('error', err => console.error('❌ SQL Pool Error (ignored):', err.message));
+
+// Connection Pool Cache for Dynamic DataSources
+const poolMap = new Map(); // key (host|db|user) -> { pool, lastUsed }
+
+// Cleanup idle pools every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of poolMap.entries()) {
+    if (now - entry.lastUsed > 300000) { // 5 minutes
+      console.log(`[PoolCache] Closing idle pool for ${key}`);
+      entry.pool.close();
+      poolMap.delete(key);
+    }
+  }
+}, 300000);
 
 // Helper for passwords
 const mockHash = (str) => {
@@ -35,8 +74,35 @@ const mockHash = (str) => {
   return hash.toString(16);
 };
 
+async function ensureSysConnection() {
+  if (sysPool.connected) return sysPool;
+  if (sysPool.connecting) {
+    // Wait for ongoing connection
+    await new Promise(r => {
+      const it = setInterval(() => {
+        if (!sysPool.connecting) { clearInterval(it); r(null); }
+      }, 100);
+    });
+    return sysPool;
+  }
+  
+  console.log('🔄 Reconnecting system pool...');
+  try {
+    await sysPool.connect();
+    console.log('📦 System pool reconnected.');
+  } catch (err) {
+    console.error('❌ Failed to reconnect system pool:', err.message);
+  }
+  return sysPool;
+}
+
 async function initDatabase() {
   try {
+    console.log('🔍 Boot Check:');
+    console.log(`   - DB_HOST: ${process.env.DB_HOST}`);
+    console.log(`   - DB_USER: ${process.env.DB_USER}`);
+    console.log(`   - DB_NAME: ${process.env.DB_NAME}`);
+    
     await sysPool.connect();
     console.log('📦 Connected to global DB (ATRAnalytics)');
 
@@ -70,6 +136,92 @@ async function initDatabase() {
       BEGIN
         ALTER TABLE Users ADD permissions NVARCHAR(MAX)
       END
+    `);
+
+    // Create Dev tables if they don't exist (must be separate queries — mssql doesn't support multi-statement batches)
+    const createIfNotExists = async (name, ddl) => {
+      const exists = await sysPool.request()
+        .input('n', sql.VarChar, name)
+        .query("SELECT 1 FROM sysobjects WHERE name=@n AND xtype='U'");
+      if (exists.recordset.length === 0) {
+        await sysPool.request().query(ddl);
+        console.log(`✅ Created table: ${name}`);
+      }
+    };
+
+    await createIfNotExists('DevSources', `CREATE TABLE DevSources (id VARCHAR(100) PRIMARY KEY, data NVARCHAR(MAX))`);
+    await createIfNotExists('DevMeasures', `CREATE TABLE DevMeasures (id VARCHAR(100) PRIMARY KEY, data NVARCHAR(MAX))`);
+    await createIfNotExists('DevCanvas',   `CREATE TABLE DevCanvas   (id VARCHAR(100) PRIMARY KEY, data NVARCHAR(MAX))`);
+    await createIfNotExists('PublishedDashboards', `CREATE TABLE PublishedDashboards (id VARCHAR(100) PRIMARY KEY, data NVARCHAR(MAX))`);
+    await createIfNotExists('SystemDashboards', `
+      CREATE TABLE SystemDashboards (
+        areaId VARCHAR(100), dashId VARCHAR(100), data NVARCHAR(MAX),
+        PRIMARY KEY (areaId, dashId)
+      )
+    `);
+    await createIfNotExists('DevDrafts', `
+      CREATE TABLE DevDrafts (
+        id         VARCHAR(100)   PRIMARY KEY,
+        authorId   VARCHAR(100),
+        authorName NVARCHAR(200),
+        name       NVARCHAR(500),
+        updatedAt  NVARCHAR(50),
+        data       NVARCHAR(MAX)
+      )
+    `);
+
+    // --- Marketplace Tables ---
+    await createIfNotExists('Marketplace_DataSources', `
+      CREATE TABLE Marketplace_DataSources (
+        id           VARCHAR(100) PRIMARY KEY,
+        name         NVARCHAR(200),
+        host         NVARCHAR(255),
+        databaseName NVARCHAR(100),
+        username     NVARCHAR(100),
+        password     NVARCHAR(500), -- In prod this should be encrypted
+        owner        VARCHAR(50),
+        createdAt    DATETIME DEFAULT GETDATE()
+      )
+    `);
+
+    await createIfNotExists('Marketplace_Widgets', `
+      CREATE TABLE Marketplace_Widgets (
+        id          UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+        name        NVARCHAR(200),
+        category    NVARCHAR(100),
+        ownerId     VARCHAR(50),
+        originId    VARCHAR(100), -- Dashboard origin
+        description NVARCHAR(MAX),
+        createdAt   DATETIME DEFAULT GETDATE(),
+        isDeleted   BIT DEFAULT 0
+      )
+    `);
+
+    await createIfNotExists('Marketplace_Widget_Versions', `
+      CREATE TABLE Marketplace_Widget_Versions (
+        versionId       UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+        widgetId        UNIQUEIDENTIFIER,
+        versionTag      NVARCHAR(20), -- e.g. "1.0.0"
+        configJSON      NVARCHAR(MAX), -- UI props, mapping
+        contractJSON    NVARCHAR(MAX), -- Inputs, expected schema
+        executionJSON   NVARCHAR(MAX), -- Engine, query template
+        createdAt       DATETIME DEFAULT GETDATE(),
+        authorId        VARCHAR(50),
+        hash            VARCHAR(64)
+      )
+    `);
+
+    await createIfNotExists('Widget_Telemetry', `
+      CREATE TABLE Widget_Telemetry (
+        id               UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+        versionId        UNIQUEIDENTIFIER,
+        userId           VARCHAR(50),
+        executionTimeMs  INT,
+        rowsCount        INT,
+        errorFlag        BIT,
+        errorMessage     NVARCHAR(MAX),
+        timestamp        DATETIME DEFAULT GETDATE()
+      )
     `);
 
     // Insert default Admin user if table is empty
@@ -154,8 +306,9 @@ app.post('/api/auth/issue', async (req, res) => {
   if (!email || !password) return res.status(400).json({ error: 'Missing credentials' });
 
   try {
+    const pool = await ensureSysConnection();
     const passHash = mockHash(password);
-    const result = await sysPool.request()
+    const result = await pool.request()
       .input('email', sql.NVarChar, email)
       .query('SELECT * FROM Users WHERE email = @email');
 
@@ -388,13 +541,41 @@ app.get('/api/dev/assets', requireToken, async (req, res) => {
     // DevCanvas stores a single object { id: '...', items: [...] } per user
     const canvasData = canvas.recordset.length > 0 ? JSON.parse(canvas.recordset[0].data).items : [];
 
+    // --- AUTO-SYNC CONNECTIONS TO MARKETPLACE ---
+    // This ensures legacy components can always find their "DataSource" credentials
+    // even if they were created before the Marketplace integration.
+    for (const row of sources.recordset) {
+      try {
+        const data = JSON.parse(row.data);
+        if (data && data.host) {
+          await sysPool.request()
+            .input('dsid', sql.VarChar, row.id)
+            .input('dsname', sql.NVarChar, data.name || row.id)
+            .input('dshost', sql.NVarChar, data.host)
+            .input('dsdb', sql.NVarChar, data.database)
+            .input('dsuser', sql.NVarChar, data.username)
+            .input('dspass', sql.NVarChar, data.password)
+            .input('dsowner', sql.VarChar, row.userId)
+            .query(`
+              IF EXISTS (SELECT * FROM Marketplace_DataSources WHERE id = @dsid)
+                UPDATE Marketplace_DataSources SET name=@dsname, host=@dshost, databaseName=@dsdb, username=@dsuser, password=@dspass WHERE id=@dsid
+              ELSE
+                INSERT INTO Marketplace_DataSources (id, name, host, databaseName, username, password, owner)
+                VALUES (@dsid, @dsname, @dshost, @dsdb, @dsuser, @dspass, @dsowner)
+            `);
+        }
+      } catch (e) {
+        console.warn(`[Sync] Failed to sync source ${row.id}:`, e.message);
+      }
+    }
+
     res.json({
       success: true,
-      sources: sources.recordset.map(r => JSON.parse(r.data)),
-      measures: measures.recordset.map(r => JSON.parse(r.data)),
-      canvas: canvasData,
-      publishedDashboards: published.recordset.map(r => JSON.parse(r.data)),
-      systemDashboards: sysMap
+      sources: sources.recordset.map(r => ({ id: r.id, data: JSON.parse(r.data) })),
+      measures: measures.recordset.map(r => ({ id: r.id, userId: r.userId, ...JSON.parse(r.data) })),
+      published: published.recordset.map(r => ({ id: r.id, ...JSON.parse(r.data) })),
+      system: sysMap,
+      canvas: canvasData
     });
   } catch (err) {
     console.error('[/api/dev/assets GET]', err.message);
@@ -517,26 +698,137 @@ app.delete('/api/dev/system/:areaId/:dashId', requireToken, async (req, res) => 
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Dev Drafts (Borradores Colaborativos) ─────────────────────────────────────
+
+// GET /api/dev/drafts — returns all drafts (visible to all devs)
+app.get('/api/dev/drafts', requireToken, async (req, res) => {
+  try {
+    const result = await sysPool.request().query(
+      'SELECT id, authorId, authorName, name, updatedAt FROM DevDrafts ORDER BY updatedAt DESC'
+    );
+    res.json({ success: true, drafts: result.recordset });
+  } catch (err) {
+    console.error('[/api/dev/drafts GET]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/dev/drafts — save or overwrite a draft
+app.post('/api/dev/drafts', requireToken, async (req, res) => {
+  const { id, name, canvas, tabs, connections } = req.body;
+  const authorId = req.session.userId;
+  const updatedAt = new Date().toISOString();
+  try {
+    // Resolve author name from DB
+    const userResult = await sysPool.request()
+      .input('uid', sql.VarChar, authorId)
+      .query('SELECT firstName, lastName FROM Users WHERE id = @uid');
+    const user = userResult.recordset[0];
+    const authorName = user ? `${user.firstName} ${user.lastName}` : 'Dev';
+
+    // Strip passwords from connections before saving
+    const safeConnections = (connections || []).map(c => ({ ...c, password: '' }));
+    // NOTE: We also strip 'rows' from tabs (heavy data) before saving
+    const safeTabs = (tabs || []).map(t => ({ ...t, rows: [], columns: t.columns || [] }));
+    const safeCanvas = (canvas || []).map(i => ({ ...i, rows: [] }));
+
+    const payload = JSON.stringify({ canvas: safeCanvas, tabs: safeTabs, connections: safeConnections });
+    await sysPool.request()
+      .input('id',         sql.VarChar(100),           id)
+      .input('authorId',   sql.VarChar(100),           authorId)
+      .input('authorName', sql.NVarChar(200),          authorName)
+      .input('name',       sql.NVarChar(500),          name || 'SIN NOMBRE')
+      .input('updatedAt',  sql.NVarChar(50),           updatedAt)
+      .input('data',       sql.NVarChar(sql.MAX),      payload)
+      .query(`
+        IF EXISTS (SELECT * FROM DevDrafts WHERE id = @id)
+          UPDATE DevDrafts SET authorId=@authorId, authorName=@authorName, name=@name, updatedAt=@updatedAt, data=@data WHERE id=@id
+        ELSE
+          INSERT INTO DevDrafts (id, authorId, authorName, name, updatedAt, data) VALUES (@id, @authorId, @authorName, @name, @updatedAt, @data)
+      `);
+    res.json({ success: true, authorName });
+  } catch (err) {
+    console.error('[/api/dev/drafts POST]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/dev/drafts/:id — load a single draft with full data
+app.get('/api/dev/drafts/:id', requireToken, async (req, res) => {
+  try {
+    const result = await sysPool.request()
+      .input('id', sql.VarChar, req.params.id)
+      .query('SELECT * FROM DevDrafts WHERE id = @id');
+    if (!result.recordset[0]) return res.status(404).json({ error: 'Draft not found' });
+    const row = result.recordset[0];
+    res.json({ success: true, draft: { ...row, data: JSON.parse(row.data) } });
+  } catch (err) {
+    console.error('[/api/dev/drafts/:id GET]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/dev/drafts/:id — only the author can delete (or any dev, as agreed)
+app.delete('/api/dev/drafts/:id', requireToken, async (req, res) => {
+  try {
+    await sysPool.request()
+      .input('id', sql.VarChar, req.params.id)
+      .query('DELETE FROM DevDrafts WHERE id = @id');
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[/api/dev/drafts/:id DELETE]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Helper: build a fresh mssql connection (no pool reuse)
 async function withConnection(creds, fn) {
-  const pool = new sql.ConnectionPool({
-    user: creds.username,
-    password: creds.password,
-    database: creds.database,
-    server: creds.host,
-    pool: { max: 5, min: 0, idleTimeoutMillis: 15000 },
-    options: {
-      encrypt: false,
-      trustServerCertificate: true,
-      connectTimeout: 10000,
-      requestTimeout: 30000,
-    },
-  });
-  await pool.connect();
+  const poolKey = `${creds.host}|${creds.database}|${creds.username}`;
+  
+  if (!poolMap.has(poolKey)) {
+    console.log(`[PoolCache] Creating new high-capacity pool for ${poolKey}`);
+    const pool = new sql.ConnectionPool({
+      user: creds.username,
+      password: creds.password,
+      database: creds.database,
+      server: creds.host,
+      pool: { 
+        max: 500, // High capacity
+        min: 0, 
+        idleTimeoutMillis: 30000,
+        acquireTimeoutMillis: 30000
+      },
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+        connectTimeout: 30000,
+        requestTimeout: 120000,
+        enableArithAbort: true
+      },
+    });
+    const connectPromise = pool.connect().catch(err => {
+      console.error(`❌ SQL Pool Connect Error for ${poolKey}:`, err.message);
+      poolMap.delete(poolKey);
+      throw err;
+    });
+    poolMap.set(poolKey, { pool, connectPromise, lastUsed: Date.now() });
+  }
+
+  const entry = poolMap.get(poolKey);
+  entry.lastUsed = Date.now();
+  const pool = await entry.connectPromise;
+
   try {
     return await fn(pool);
-  } finally {
-    await pool.close().catch(() => {});
+  } catch (err) {
+    // If the pool is dead or has connectivity issues, purge it
+    const msg = err.message.toLowerCase();
+    if (msg.includes('connection is closed') || msg.includes('dead') || msg.includes('reset') || msg.includes('network')) {
+      console.log(`[PoolCache] Purging dead/reset pool for ${poolKey}`);
+      poolMap.delete(poolKey);
+      pool.close().catch(() => {});
+    }
+    throw err;
   }
 }
 
@@ -593,15 +885,294 @@ app.post('/api/query', requireToken, async (req, res) => {
     return res.status(400).json({ error: 'Missing connection or query parameters' });
   }
   try {
-    const result = await withConnection({ host, database, username, password }, async (pool) => {
-      return pool.request().query(query);
+    const result = await withConnection({ host, database, username, password }, (pool) => {
+      return new Promise((resolve, reject) => {
+        const rows = [];
+        let columns = [];
+        const request = pool.request();
+        request.stream = true; // Use streaming to prevent OOM on 15M+ row tables
+        
+        let cancelled = false;
+        const MAX_ROWS = 50000; // Protection limit for raw un-aggregated queries
+
+        request.query(query);
+
+        request.on('recordset', (recordsetColumns) => {
+          columns = Object.keys(recordsetColumns);
+        });
+
+        request.on('row', (row) => {
+          if (cancelled) return;
+          rows.push(row);
+          if (rows.length >= MAX_ROWS) {
+            cancelled = true;
+            request.cancel(); // Stop fetching early!
+          }
+        });
+
+        request.on('error', (err) => {
+          if (err.name === 'RequestError' && err.message.includes('Canceled')) {
+            // We cancelled it on purpose, resolve with what we have
+            resolve({ columns, rows, warning: `Se ha limitado a ${MAX_ROWS} filas por seguridad. IMPORTANTE: Para que tu gráfica represente los 200 MILLONES de datos correctamente y sin explotar el sistema, dale clic al botón "Mega Optimizador 🔥".` });
+          } else {
+            console.error('SQL Stream Error:', err);
+            reject(err);
+          }
+        });
+
+        request.on('done', () => {
+          if (!cancelled) resolve({ columns, rows });
+        });
+      });
     });
-    const columns = result.recordset.length > 0
-      ? Object.keys(result.recordset[0])
-      : [];
-    res.json({ success: true, columns, rows: result.recordset });
+
+    res.json({ 
+      success: true, 
+      columns: result.columns, 
+      rows: result.rows,
+      warning: result.warning 
+    });
   } catch (err) {
     console.error('[/api/query]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Marketplace Secure Query Execution ──────────────────────────────────────
+
+// Helper to get datasource by ID
+async function getDataSource(id) {
+  const result = await sysPool.request()
+    .input('id', sql.VarChar, id)
+    .query('SELECT * FROM Marketplace_DataSources WHERE id = @id');
+  return result.recordset[0];
+}
+
+// POST /api/marketplace/query
+// Secure execution using stored credentials and query sanitization
+app.post('/api/marketplace/query', requireToken, async (req, res) => {
+  const { dataSourceId, queryTemplate, parameters, versionId } = req.body;
+  const startTime = Date.now();
+
+  if (!dataSourceId || !queryTemplate) {
+    return res.status(400).json({ error: 'Missing dataSourceId or queryTemplate' });
+  }
+
+  try {
+    const ds = await getDataSource(dataSourceId);
+    if (!ds) return res.status(404).json({ error: 'DataSource not found' });
+
+    // Connection Broker: uses stored credentials
+    const creds = {
+      host: ds.host,
+      database: ds.databaseName,
+      username: ds.username,
+      password: ds.password // In prod, decrypt this
+    };
+
+    const result = await withConnection(creds, async (pool) => {
+      const request = pool.request();
+      
+      // Sanitization & Parameter Binding
+      // Parameters should be an array of { name, type, value }
+      if (parameters && Array.isArray(parameters)) {
+        parameters.forEach(p => {
+          const sqlType = sql[p.type] || sql.NVarChar;
+          request.input(p.name, sqlType, p.value);
+        });
+      }
+
+      // Execution Limit Protection
+      const MAX_ROWS = 25000; 
+      let rows = [];
+      let columns = [];
+      let cancelled = false;
+
+      request.stream = true;
+      request.query(queryTemplate);
+
+      return new Promise((resolve, reject) => {
+        request.on('recordset', (cols) => { columns = Object.keys(cols); });
+        request.on('row', (row) => {
+          if (cancelled) return;
+          rows.push(row);
+          if (rows.length >= MAX_ROWS) {
+            cancelled = true;
+            request.cancel();
+          }
+        });
+        request.on('error', (err) => {
+          if (err.name === 'RequestError' && err.message.includes('Canceled')) resolve({ columns, rows, partial: true });
+          else reject(err);
+        });
+        request.on('done', () => { if (!cancelled) resolve({ columns, rows, partial: false }); });
+      });
+    });
+
+    // Telemetry & Logging
+    if (versionId) {
+      sysPool.request()
+        .input('vid', sql.UniqueIdentifier, versionId)
+        .input('uid', sql.VarChar, req.session.userId)
+        .input('time', sql.Int, Date.now() - startTime)
+        .input('rcount', sql.Int, result.rows.length)
+        .input('err', sql.Bit, 0)
+        .query(`
+          INSERT INTO Widget_Telemetry (versionId, userId, executionTimeMs, rowsCount, errorFlag)
+          VALUES (@vid, @uid, @time, @rcount, @err)
+        `).catch(err => console.error('Telemetry Log Error:', err.message));
+    }
+
+    res.json({
+      success: true,
+      columns: result.columns,
+      rows: result.rows,
+      partial: result.partial,
+      executionTime: Date.now() - startTime
+    });
+
+  } catch (err) {
+    console.error('[/api/marketplace/query]', err.message);
+    
+    // Log error telemetry
+    if (versionId) {
+      sysPool.request()
+        .input('vid', sql.UniqueIdentifier, versionId)
+        .input('uid', sql.VarChar, req.session.userId)
+        .input('msg', sql.NVarChar, err.message)
+        .query(`
+          INSERT INTO Widget_Telemetry (versionId, userId, errorFlag, errorMessage)
+          VALUES (@vid, @uid, 1, @msg)
+        `).catch(e => console.error('Error Telemetry Log Error:', e.message));
+    }
+
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/marketplace/widgets
+app.get('/api/marketplace/widgets', requireToken, async (req, res) => {
+  try {
+    const pool = await ensureSysConnection();
+    const result = await pool.request().query(`
+      SELECT w.*, v.versionTag, v.configJSON, v.contractJSON, v.executionJSON, v.versionId
+      FROM Marketplace_Widgets w
+      JOIN Marketplace_Widget_Versions v ON w.id = v.widgetId
+      WHERE w.isDeleted = 0
+      ORDER BY w.createdAt DESC
+    `);
+    res.json({ success: true, widgets: result.recordset });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/marketplace/datasources
+app.get('/api/marketplace/datasources', requireToken, async (req, res) => {
+  try {
+    const pool = await ensureSysConnection();
+    const result = await pool.request()
+      .input('uid', sql.VarChar, req.session.userId)
+      .query('SELECT id, name, host, databaseName, username, owner FROM Marketplace_DataSources');
+    res.json({ success: true, dataSources: result.recordset });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/marketplace/datasources
+app.post('/api/marketplace/datasources', requireToken, async (req, res) => {
+  const { id, name, host, databaseName, username, password } = req.body;
+  try {
+    await sysPool.request()
+      .input('id', sql.VarChar, id)
+      .input('name', sql.NVarChar, name)
+      .input('host', sql.NVarChar, host)
+      .input('db', sql.NVarChar, databaseName)
+      .input('user', sql.NVarChar, username)
+      .input('pass', sql.NVarChar, password)
+      .input('owner', sql.VarChar, req.session.userId)
+      .query(`
+        IF EXISTS (SELECT * FROM Marketplace_DataSources WHERE id = @id)
+          UPDATE Marketplace_DataSources SET name=@name, host=@host, databaseName=@db, username=@user, password=@pass WHERE id=@id
+        ELSE
+          INSERT INTO Marketplace_DataSources (id, name, host, databaseName, username, password, owner)
+          VALUES (@id, @name, @host, @db, @user, @password, @owner)
+      `);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/marketplace/datasources
+app.get('/api/marketplace/datasources', requireToken, async (req, res) => {
+  try {
+    const result = await sysPool.request()
+      .input('uid', sql.VarChar, req.session.userId)
+      .query('SELECT id, name, host, databaseName, username, owner FROM Marketplace_DataSources');
+    res.json({ success: true, dataSources: result.recordset });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/marketplace/harvest
+// Scans a dashboard's components and registers original items in the marketplace
+app.post('/api/marketplace/harvest', requireToken, async (req, res) => {
+  const { dashboardId, dashboardName, components } = req.body;
+  if (!components || !Array.isArray(components)) return res.status(400).json({ error: 'No components to harvest' });
+
+  try {
+    for (const comp of components) {
+      // Logic: Only harvest if it has a unique signature (mocked here for now)
+      // In a real system, we'd hash the SQL + Config
+      const widgetId = crypto.randomUUID();
+      const versionId = crypto.randomUUID();
+
+      // If connection details are provided, register the data source first
+      if (comp.connection) {
+        const { connectionId, name, host, databaseName, username, password } = comp.connection;
+        await sysPool.request()
+          .input('dsid', sql.VarChar, connectionId)
+          .input('dsname', sql.NVarChar, name || `DS ${connectionId}`)
+          .input('dshost', sql.NVarChar, host)
+          .input('dsdb', sql.NVarChar, databaseName)
+          .input('dsuser', sql.NVarChar, username)
+          .input('dspass', sql.NVarChar, password)
+          .input('dsowner', sql.VarChar, req.session.userId)
+          .query(`
+            IF NOT EXISTS (SELECT * FROM Marketplace_DataSources WHERE id = @dsid)
+              INSERT INTO Marketplace_DataSources (id, name, host, databaseName, username, password, owner)
+              VALUES (@dsid, @dsname, @dshost, @dsdb, @dsuser, @dspass, @dsowner)
+          `);
+      }
+
+      await sysPool.request()
+        .input('id', sql.UniqueIdentifier, widgetId)
+        .input('name', sql.NVarChar, comp.name || 'Componente Sin Nombre')
+        .input('owner', sql.VarChar, req.session.userId)
+        .input('origin', sql.VarChar, dashboardId)
+        .query(`
+          INSERT INTO Marketplace_Widgets (id, name, ownerId, originId)
+          VALUES (@id, @name, @owner, @origin)
+        `);
+
+      await sysPool.request()
+        .input('vid', sql.UniqueIdentifier, versionId)
+        .input('wid', sql.UniqueIdentifier, widgetId)
+        .input('config', sql.NVarChar, JSON.stringify(comp.config || {}))
+        .input('contract', sql.NVarChar, JSON.stringify(comp.contract || {}))
+        .input('execution', sql.NVarChar, JSON.stringify(comp.execution || {}))
+        .input('aid', sql.VarChar, req.session.userId)
+        .query(`
+          INSERT INTO Marketplace_Widget_Versions (versionId, widgetId, versionTag, configJSON, contractJSON, executionJSON, authorId)
+          VALUES (@vid, @wid, '1.0.0', @config, @contract, @execution, @aid)
+        `);
+    }
+    res.json({ success: true, count: components.length });
+  } catch (err) {
+    console.error('[/api/marketplace/harvest]', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -609,8 +1180,28 @@ app.post('/api/query', requireToken, async (req, res) => {
 // No-token health check
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
-const PORT = 3001;
+// ── Global Process Safety ──────────────────────────────────────────────────
+process.on('unhandledRejection', (reason, promise) => {
+  const msg = reason?.message || String(reason);
+  if (msg.toLowerCase().includes('sql') || msg.toLowerCase().includes('connection')) {
+    console.warn('⚠️ Intercepted SQL Unhandled Rejection (preventing crash):', msg);
+  } else {
+    console.error('🔥 UNHANDLED REJECTION:', reason);
+  }
+});
+
+process.on('uncaughtException', (err) => {
+  if (err.message.toLowerCase().includes('connection')) {
+    console.warn('⚠️ Intercepted SQL Exception (preventing crash):', err.message);
+  } else {
+    console.error('🔥 UNCAUGHT EXCEPTION:', err);
+    // process.exit(1); // Keep alive for now, but monitor memory
+  }
+});
+
+const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`🚀  ATR Analytics API  →  http://localhost:${PORT}`);
   console.log(`    Endpoints: /api/auth/issue  /api/tables  /api/columns  /api/query`);
+  initDatabase().catch(err => console.error('Initial DB Connect Failure:', err.message));
 });

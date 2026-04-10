@@ -1,7 +1,10 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { X, Move, BarChart3, Send, Loader2, CheckCircle2, Trash2 } from "lucide-react";
+import { X, Move, BarChart3, Send, Loader2, CheckCircle2, Trash2, Box, Layers } from "lucide-react";
 import { useDataStore } from "../hooks/useDataStore";
 import LiveWidget from "./LiveWidget";
+import { useMarketplaceStore } from "../hooks/useMarketplaceStore";
+import InjectedWidget from "./InjectedWidget";
+import MarketplaceDrawer from "./MarketplaceDrawer";
 
 interface SavedComponent {
   id: string;
@@ -9,22 +12,26 @@ interface SavedComponent {
   code: string;
   rows: any[];
   columns: string[];
+  query?: string;
+  connectionId?: string;
 }
 
 interface DashItem extends SavedComponent {
   instanceId: string;
   x: number; y: number;
   w: number; h: number;
+  isMarketplace?: boolean;
 }
 
 interface DashboardBuilderProps {
   components: SavedComponent[];
+  connections: any[];
   dark: boolean;
   onClose: () => void;
 }
 
 // ─── DashboardBuilder ─────────────────────────────────────────────────────────
-export default function DashboardBuilder({ components, dark, onClose }: DashboardBuilderProps) {
+export default function DashboardBuilder({ components, connections, dark, onClose }: DashboardBuilderProps) {
   const { publishDashboard } = useDataStore();
   const bg = dark ? "#06090f" : "#f1f5f9";
   const surface = dark ? "#161b22" : "#fff";
@@ -34,16 +41,42 @@ export default function DashboardBuilder({ components, dark, onClose }: Dashboar
 
   // ── Canvas items ────────────────────────────────────────────────────────
   const { devCanvas = [], saveDevCanvas } = useDataStore() as any;
-  const [items, setItems] = useState<DashItem[]>(devCanvas);
+  const items = devCanvas as DashItem[];
+  const { widgets } = useMarketplaceStore();
+  const [showMarketplace, setShowMarketplace] = useState(false);
+  const [flashIds, setFlashIds] = useState<Set<string>>(new Set());
 
-  // Keep local state in sync if external stores change (e.g. data arrives from backend)
-  useEffect(() => {
-    // If we have items and they are empty but devCanvas has data, sync them
-    setItems(devCanvas);
-  }, [devCanvas]); 
+  // Handle Marketplace Injection
+  const handleMarketplaceInject = (widget: any) => {
+    const instanceId = `inst-mkt-${Date.now()}`;
+    const newItem: DashItem = {
+      id: widget.id,
+      instanceId,
+      name: widget.name,
+      code: widget.configJSON ? JSON.parse(widget.configJSON).code : '',
+      versionId: widget.versionId,
+      executionJSON: widget.executionJSON,
+      x: 20, y: 20, w: 480, h: 360,
+      isMarketplace: true,
+      rows: [],
+      columns: []
+    };
+    
+    const updated = [...devCanvas, newItem];
+    saveDevCanvas(updated);
+    
+    // Trigger Green Flash
+    setFlashIds(prev => new Set(prev).add(instanceId));
+    setTimeout(() => {
+      setFlashIds(prev => {
+        const next = new Set(prev);
+        next.delete(instanceId);
+        return next;
+      });
+    }, 3000);
+  };
 
   const save = useCallback((updated: DashItem[]) => {
-    setItems(updated);
     saveDevCanvas(updated);
   }, [saveDevCanvas]);
 
@@ -57,6 +90,16 @@ export default function DashboardBuilder({ components, dark, onClose }: Dashboar
       h: 360,
     };
     save([...items, inst]);
+
+    // Trigger Green Flash for standard components too
+    setFlashIds(prev => new Set(prev).add(inst.instanceId));
+    setTimeout(() => {
+      setFlashIds(prev => {
+        const next = new Set(prev);
+        next.delete(inst.instanceId);
+        return next;
+      });
+    }, 3000);
   };
 
   const removeItem = (iid: string) => save(items.filter(i => i.instanceId !== iid));
@@ -82,28 +125,38 @@ export default function DashboardBuilder({ components, dark, onClose }: Dashboar
       const dx = e.clientX - startPos.current.mx;
       const dy = e.clientY - startPos.current.my;
 
-      setItems(prev => prev.map(it => {
+      const updated = items.map(it => {
         if (it.instanceId !== activeId) return it;
         if (isResizing) {
           return { ...it, w: Math.max(150, startPos.current.w + dx), h: Math.max(100, startPos.current.h + dy) };
         } else {
           return { ...it, x: Math.max(0, startPos.current.x + dx), y: Math.max(0, startPos.current.y + dy) };
         }
-      }));
+      });
+      save(updated);
     });
-  }, [activeId, isResizing]);
+  }, [activeId, isResizing, items, save]);
 
   const onMouseUp = useCallback(() => {
     if (activeId) {
+      const activeItem = items.find(it => it.instanceId === activeId);
       setActiveId(null);
       setIsResizing(false);
-      // We use a function to read the latest state reliably
-      setItems(currentItems => {
-        saveDevCanvas(currentItems);
-        return currentItems;
-      });
+
+      if (activeItem) {
+        if (activeItem.isMarketplace) {
+          // Sync back to marketplace store
+          useMarketplaceStore.getState().updateInstanceProps(activeId, {
+            position: { x: activeItem.x, y: activeItem.y, w: activeItem.w, h: activeItem.h }
+          });
+        } else {
+          // Sync to standard devCanvas
+          const legacyItems = items.filter(it => !it.isMarketplace);
+          saveDevCanvas(legacyItems);
+        }
+      }
     }
-  }, [activeId, saveDevCanvas]);
+  }, [activeId, items, saveDevCanvas]);
 
   useEffect(() => {
     if (activeId) {
@@ -140,13 +193,28 @@ export default function DashboardBuilder({ components, dark, onClose }: Dashboar
     try {
       const dashboard = {
         name: dashName,
-        components: items.map(it => ({ 
-          name: it.name, 
-          code: it.code, 
-          rows: [],  // Rows removed to avoid localStorage quota issues
-          columns: it.columns || [], 
-          x: it.x, y: it.y, w: it.w, h: it.h 
-        })),
+        components: items.map(it => {
+          const original = components.find(c => c.id === it.id);
+          const connDetails = connections.find(c => c.id === original?.connectionId);
+          
+          return { 
+            name: it.name, 
+            code: original?.code || it.code, 
+            query: original?.query || "",
+            connectionId: original?.connectionId || "",
+            connection: connDetails ? {
+              connectionId: connDetails.id,
+              name: connDetails.name,
+              host: connDetails.host,
+              databaseName: connDetails.database,
+              username: connDetails.username,
+              password: connDetails.password
+            } : null,
+            rows: [], 
+            columns: it.columns || [], 
+            x: it.x, y: it.y, w: it.w, h: it.h 
+          };
+        }),
         publishedAt: new Date().toISOString(),
         publishedBy: "Desarrollador", 
       };
@@ -211,8 +279,15 @@ export default function DashboardBuilder({ components, dark, onClose }: Dashboar
       <div className="flex flex-1 overflow-hidden">
         {/* ── LEFT: Library ──────────────────────────────────── */}
         <aside className="w-64 flex flex-col overflow-hidden shrink-0 border-r" style={{ background: surface, borderColor: border }}>
-          <div className="px-4 py-3 border-b" style={{ borderColor: border }}>
+          <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: border }}>
             <span className="text-[10px] font-black uppercase tracking-widest text-indigo-500">Banco de Gráficos</span>
+            <button 
+              onClick={() => setShowMarketplace(true)}
+              className="p-1.5 bg-indigo-600/10 hover:bg-indigo-600 text-indigo-500 hover:text-white rounded-lg transition group"
+              title="Explorar Marketplace"
+            >
+              <Box className="w-3.5 h-3.5" />
+            </button>
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
             {components.length === 0 && (
@@ -235,7 +310,7 @@ export default function DashboardBuilder({ components, dark, onClose }: Dashboar
                   <span className="text-xs font-bold truncate flex-1">{comp.name}</span>
                 </div>
                 <div className="text-[10px] mt-2 flex justify-between" style={{ color: muted }}>
-                  <span>{comp.rows.length} registros</span>
+                  <span>{comp.rows?.length || 0} registros</span>
                   <span className="text-indigo-500 font-bold opacity-0 group-hover:opacity-100">+ Agregar</span>
                 </div>
               </div>
@@ -247,10 +322,11 @@ export default function DashboardBuilder({ components, dark, onClose }: Dashboar
         <div className="flex-1 relative overflow-auto" style={{ background: dark ? "#010409" : "#f8fafc" }}>
           {gridBackground}
 
+          {/* Render Old Components */}
           {items.map(item => (
             <div
               key={item.instanceId}
-              className="absolute group"
+              className={`absolute transition-all duration-300 group ${flashIds.has(item.instanceId) ? 'z-50' : ''}`}
               style={{
                 left: item.x,
                 top: item.y,
@@ -259,26 +335,50 @@ export default function DashboardBuilder({ components, dark, onClose }: Dashboar
                 zIndex: activeId === item.instanceId ? 50 : 1,
               }}
             >
-              {/* The Container (No Header/Border as requested) */}
-              <div className="w-full h-full relative rounded-xl overflow-hidden transition-shadow" 
-                   style={{ 
-                     background: surface,
-                     boxShadow: activeId === item.instanceId ? '0 20px 40px -10px rgba(0,0,0,0.3)' : '0 4px 12px -2px rgba(0,0,0,0.1)',
-                     border: `1px solid ${activeId === item.instanceId ? '#6366f1' : border}`
-                   }}>
+              <div 
+                className={`
+                  w-full h-full relative rounded-xl overflow-hidden transition-all duration-500
+                  ${flashIds.has(item.instanceId) ? 'ring-4 ring-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.3)]' : ''}
+                `}
+                style={{ 
+                  background: surface,
+                  boxShadow: activeId === item.instanceId ? '0 20px 40px -10px rgba(0,0,0,0.3)' : '0 4px 12px -2px rgba(0,0,0,0.1)',
+                  border: `1px solid ${flashIds.has(item.instanceId) ? '#10b981' : (activeId === item.instanceId ? '#6366f1' : border)}`
+                }}>
+                
+                {/* Highlight Glow Effect */}
+                {flashIds.has(item.instanceId) && (
+                  <div className="absolute inset-0 bg-emerald-500/10 animate-pulse pointer-events-none" />
+                )}
                 
                 {/* The Chart (Full interactivity) */}
                 <div className="absolute inset-0">
-                  <LiveWidget code={item.code} rows={item.rows} columns={item.columns} dark={dark} padding={20} />
+                  {item.query && item.connectionId ? (
+                    <InjectedWidget 
+                      instanceId={item.instanceId}
+                      widget={{
+                        name: item.name,
+                        versionId: item.versionId || 'local-dev',
+                        executionJSON: item.executionJSON || JSON.stringify({
+                          dataSourceId: item.connectionId,
+                          rawQuery: item.query,
+                          visualType: item.visualType || 'table',
+                          code: item.code
+                        })
+                      }}
+                      dark={dark} 
+                    />
+                  ) : (
+                    <LiveWidget code={item.code} rows={item.rows} columns={item.columns} dark={dark} padding={20} />
+                  )}
                 </div>
 
-                {/* Drag Handle (Specific area to avoid blocking the whole chart) */}
+                {/* Drag Handle Area */}
                 <div 
                   className="absolute inset-0 cursor-grab active:cursor-grabbing group-hover:bg-indigo-500/5 transition-colors"
-                  style={{ pointerEvents: activeId === item.instanceId ? 'auto' : 'none' }} // Only catch events if already active
+                  style={{ pointerEvents: activeId === item.instanceId ? 'auto' : 'none' }}
                 />
                 
-                {/* Re-introducing a specific handle for movement since full-card drag blocks chart */}
                 <div 
                   className="absolute top-2 left-2 p-1.5 bg-indigo-600 rounded-lg shadow-lg cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity z-10"
                   onMouseDown={e => {
@@ -288,10 +388,9 @@ export default function DashboardBuilder({ components, dark, onClose }: Dashboar
                     startPos.current = { mx: e.clientX, my: e.clientY, x: item.x, y: item.y, w: item.w, h: item.h };
                   }}
                 >
-                  <Move className="w-3.5 h-3.5 text-white" />
+                  {item.isMarketplace ? <Layers className="w-3.2 h-3.5 text-white" /> : <Move className="w-3.5 h-3.5 text-white" />}
                 </div>
 
-                {/* Floating Controls (Appear on Hover) */}
                 <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
                   <button 
                     onMouseDown={e => e.stopPropagation()}
@@ -320,6 +419,13 @@ export default function DashboardBuilder({ components, dark, onClose }: Dashboar
           ))}
         </div>
       </div>
+
+      {/* Marketplace Drawer */}
+      <MarketplaceDrawer 
+        isOpen={showMarketplace} 
+        onClose={() => setShowMarketplace(false)} 
+        onInject={handleMarketplaceInject}
+      />
 
       {/* ── Publish Modal ────────────────────────────────────────── */}
       {showPublish && (

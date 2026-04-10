@@ -138,6 +138,7 @@ let internal_measures: any[] = JSON.parse(localStorage.getItem("atr_dev_measures
 let internal_canvas: any[] = JSON.parse(localStorage.getItem("atr_dev_canvas") || "[]");
 let internal_published: any[] = JSON.parse(localStorage.getItem("atr_published_dashboards") || "[]");
 let internal_system: Record<string, any[]> = JSON.parse(localStorage.getItem("atr_system_dashboards") || "null") || INITIAL_DASHBOARDS_MAP;
+let internal_drafts: any[] = []; // Drafts are always loaded from backend, not localStorage
 
 // Fetch all data from backend helper
 const fetchAllDataFromBackend = async () => {
@@ -174,24 +175,34 @@ const fetchAllDataFromBackend = async () => {
       console.warn("Storage quota exceeded, could not persist all dev assets to LocalStorage.", e);
     }
   }
+
+  // Fetch drafts separately (metadata only, no heavy data)
+  const draftsData = await fetchFromBackend('/api/dev/drafts');
+  if (draftsData && draftsData.drafts) {
+    internal_drafts = draftsData.drafts;
+  }
+
   notify();
+};
+
+// --- Utilities to prune heavy data before syncing ---
+const stripDataRows = (item: any): any => {
+  if (typeof item !== 'object' || item === null) return item;
+  if (Array.isArray(item)) return item.map(stripDataRows);
+  
+  const { rows, ...rest } = item;
+  
+  // Recursively handle components within dashboards or other structures
+  if (rest.components && Array.isArray(rest.components)) {
+    rest.components = rest.components.map(stripDataRows);
+  }
+  
+  return rest;
 };
 
 const serializeLite = (val: any): string => {
   if (!val) return JSON.stringify(val);
-  
-  const strip = (item: any) => {
-    if (typeof item !== 'object' || item === null) return item;
-    if (Array.isArray(item)) return item.map(strip);
-    const { rows, ...rest } = item;
-    // Recursively handle components within dashboards
-    if (rest.components && Array.isArray(rest.components)) {
-      rest.components = rest.components.map(strip);
-    }
-    return rest;
-  };
-
-  return JSON.stringify(strip(val));
+  return JSON.stringify(stripDataRows(val));
 };
 
 const persistBackend = async (endpoint: string, method: string, body?: any) => {
@@ -383,7 +394,8 @@ export const useDataStore = () => {
       const measure = { ...m, id: m.id || `msr-${Date.now()}` };
       internal_measures = [...internal_measures, measure];
       persist("atr_dev_measures", internal_measures);
-      persistBackend('/api/dev/measures', 'POST', measure);
+      const liteMeasure = { ...measure, rows: [] };
+      persistBackend('/api/dev/measures', 'POST', liteMeasure);
     },
     deleteDevSource: (id: string) => {
       internal_sources = internal_sources.filter((s: any) => s.id !== id);
@@ -399,24 +411,24 @@ export const useDataStore = () => {
       // The canvas is the entire array of items currently on the board
       internal_canvas = items;
       persist("atr_dev_canvas", internal_canvas);
-      persistBackend('/api/dev/canvas', 'POST', { id: 'active_canvas', items });
+      const liteItems = items.map(item => ({ ...item, rows: [] }));
+      persistBackend('/api/dev/canvas', 'POST', { id: 'active_canvas', items: liteItems });
     },
     publishedDashboards: internal_published,
-    publishDashboard: (d: any) => {
+    publishDashboard: async (d: any) => {
       const published = { ...d, id: d.id || `pub-${Date.now()}` };
       internal_published = [...internal_published, published];
+      persist("atr_published_dashboards", internal_published);
       try {
-        persist("atr_published_dashboards", internal_published);
-      } catch (e) {
-        // localStorage quota exceeded — strip row data and retry
-        const lite = internal_published.map((p: any) => ({
-          ...p,
-          components: (p.components || []).map((c: any) => ({ ...c, rows: [], columns: c.columns || [] }))
-        }));
-        try { localStorage.setItem("atr_published_dashboards", JSON.stringify(lite)); } catch(_) {}
+        await fetch(`${API}/api/dev/published`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem("atr_token")}` },
+          body: JSON.stringify(published)
+        });
         notify();
+      } catch (e) {
+        console.error("Failed to sync published dashboard to backend", e);
       }
-      persistBackend('/api/dev/published', 'POST', published);
     },
     deletePublishedDashboard: (id: string) => {
       internal_published = internal_published.filter(p => p.id !== id);
@@ -436,6 +448,29 @@ export const useDataStore = () => {
       persist("atr_published_dashboards", internal_published);
 
       persistBackend('/api/dev/system', 'POST', { areaId, dashId: newDash.id, dashboard: newDash });
+      
+      // Also delete from published (pending) queue in backend
+      persistBackend(`/api/dev/published/${pubId}`, 'DELETE');
+      
+      // TRIGGER HARVESTING: Register widgets in the marketplace
+      if (dash.components && Array.isArray(dash.components)) {
+        persistBackend('/api/marketplace/harvest', 'POST', {
+          dashboardId: newDash.id,
+          dashboardName: newDash.title,
+          components: dash.components.map((c: any) => ({
+            name: c.name,
+            config: { code: c.code }, // UI logic
+            contract: { source: 'SQL_SERVER' }, // Data contract
+            execution: { 
+              engine: 'SQL_SERVER_DIRECT', 
+              rawQuery: c.query || '', 
+              dataSourceId: c.connectionId 
+            },
+            connection: c.connection // Includes host/db/user/pass for Marketplace registration
+          }))
+        });
+      }
+
       persistBackend(`/api/dev/published/${pubId}`, 'DELETE');
     },
     
@@ -515,6 +550,130 @@ export const useDataStore = () => {
       const u = internal_users.find(u => u.id === userId);
       if(u) {
          persistBackend(`/api/users/${userId}/permissions`, 'PUT', u.permissions);
+      }
+    },
+
+    // ─ Borradores (Drafts) ───────────────────
+    devDrafts: internal_drafts,
+
+    saveDraft: async (draftId: string, name: string | null, canvasItems: any[], tabsData: any[], connectionsData: any[]) => {
+      const token = localStorage.getItem("atr_token");
+      if (!token) return null;
+      try {
+        // Slim payload — only keep what's needed to restore a session
+        // DO NOT send: rows (raw data), code (auto-generated JSX), passwords
+        const slimTabs = tabsData.map(t => ({
+          id: t.id,
+          title: t.title,
+          connectionId: t.connectionId,
+          query: t.query,          // SQL to re-run
+          columns: t.columns || [], // column names
+          // code is omitted — it will be regenerated from visualMapping
+        }));
+
+        const slimCanvas = canvasItems.map(i => ({
+          instanceId: i.instanceId,
+          id: i.id,
+          name: i.name,
+          type: i.type, // visual type
+          // no rows, no code
+        }));
+
+        const slimConns = connectionsData.map(c => ({
+          id: c.id,
+          name: c.name,
+          host: c.host,
+          database: c.database,
+          username: c.username,
+          // password intentionally stripped for security
+        }));
+
+        const res = await fetch(`${API}/api/dev/drafts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            id: draftId,
+            name: name || 'SIN NOMBRE',
+            canvas: slimCanvas,
+            tabs: slimTabs,
+            connections: slimConns
+          })
+        });
+        const d = await res.json();
+        if (d.success) {
+          // Refresh drafts list
+          const refreshed = await fetchFromBackend('/api/dev/drafts');
+          if (refreshed) internal_drafts = refreshed.drafts || [];
+          notify();
+          return d;
+        } else {
+          console.error('Draft save failed:', d.error);
+        }
+      } catch (err) { console.error('Failed to save draft', err); }
+      return null;
+    },
+
+    loadDraft: async (draftId: string) => {
+      const token = localStorage.getItem("atr_token");
+      if (!token) return null;
+      try {
+        const res = await fetch(`${API}/api/dev/drafts/${draftId}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const d = await res.json();
+        if (d.success) return d.draft;
+      } catch (err) { console.error('Failed to load draft', err); }
+      return null;
+    },
+
+    deleteDraft: async (draftId: string) => {
+      const token = localStorage.getItem("atr_token");
+      if (!token) return;
+      try {
+        await fetch(`${API}/api/dev/drafts/${draftId}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        internal_drafts = internal_drafts.filter((d: any) => d.id !== draftId);
+        notify();
+      } catch (err) { console.error('Failed to delete draft', err); }
+    },
+
+    refreshAssets: async () => {
+      const data = await fetchFromBackend('/api/dev/assets');
+      if (data) {
+        internal_sources = data.sources || [];
+        internal_measures = data.measures || [];
+        internal_canvas = data.canvas || [];
+        internal_published = data.published || [];
+        internal_system = data.system || INITIAL_DASHBOARDS_MAP;
+        
+        persist("atr_dev_sources", internal_sources);
+        persist("atr_dev_measures", internal_measures);
+        persist("atr_dev_canvas", internal_canvas);
+        persist("atr_published_dashboards", internal_published);
+        persist("atr_system_dashboards", internal_system);
+        notify();
+      }
+    },
+    
+    // --- Canvas Operations ---
+    devCanvas: internal_canvas,
+    saveDevCanvas: async (items: any[]) => {
+      internal_canvas = items;
+      persist("atr_dev_canvas", internal_canvas);
+      notify();
+      
+      // Auto-persist to backend if possible (optional but recommended)
+      const token = localStorage.getItem("atr_token");
+      if (token) {
+        try {
+          await fetch(`${API}/api/dev/canvas`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ items })
+          });
+        } catch (err) { console.error('Failed to sync canvas to backend', err); }
       }
     }
   };

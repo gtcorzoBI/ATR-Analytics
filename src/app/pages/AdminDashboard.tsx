@@ -25,9 +25,14 @@ export default function AdminDashboard() {
     systemDashboards,
     hideDashboard,
     archiveDashboard,
-    deleteSystemDashboard
+    deleteSystemDashboard,
+    refreshAssets
   } = useDataStore();
   
+  useEffect(() => {
+    refreshAssets();
+  }, [refreshAssets]);
+
   const [expandedAreas, setExpandedAreas] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [tableSearchQuery, setTableSearchQuery] = useState("");
