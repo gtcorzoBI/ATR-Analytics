@@ -34,3 +34,38 @@ export interface CanvasDashboard {
     y: number;
   }[];
 }
+export interface MarketplaceWidget {
+  id: string;
+  name: string;
+  category: string;
+  ownerId: string;
+  originId: string;
+  description: string;
+  versionId: string;
+  versionTag: string;
+  configJSON: string;
+  contractJSON: string;
+  executionJSON: string;
+}
+
+export interface DataContract {
+  inputs: string[];
+  schema: Record<string, string>;
+  source: string;
+  version: string;
+}
+
+export interface ExecutionLayer {
+  engine: 'SQL_SERVER_DIRECT' | 'REST_API' | 'MOCK';
+  connectionId: string;
+  rawQuery?: string;
+  parameters?: { name: string; type: string; required: boolean }[];
+}
+
+export interface DashboardWidgetInstance {
+  instanceId: string;
+  widgetId: string;
+  versionId: string;
+  customProps: any;
+  position: { x: number; y: number; w: number; h: number };
+}

@@ -1,11 +1,11 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useAuth } from "../context/AuthContext";
 import { useNavigate } from "react-router";
 import {
   Database, ChevronRight, ChevronDown, Table2, Columns3, Play,
   LogOut, RefreshCw, Code2, BarChart3, X, Plus, Search, Sun, Moon,
   AlertCircle, CheckCircle2, Loader2, FileText, Save, LayoutDashboard, PenSquare, ChevronLeft, PieChart,
-  LayoutPanelTop, Layers, Circle, Grid, Filter
+  LayoutPanelTop, Layers, Circle, Grid, Filter, Box
 } from "lucide-react";
 import ChartPreview from "../components/ChartPreview";
 import DashboardBuilder from "../components/DashboardBuilder";
@@ -14,6 +14,8 @@ import { VISUAL_DEFINITIONS, VisualMappingState, getEmptyMapping, VisualSlotItem
 import { generateChartCode } from "../components/VisualGenerator";
 import SyntaxHighlighter from "../components/SyntaxHighlighter";
 import RelationCanvas, { NodeDef, EdgeDef } from "../components/RelationCanvas";
+import MiniChartPreview from "../components/MiniChartPreview";
+// Marketplace moved to DashboardBuilder
 
 interface Connection {
   id: string; name: string; host: string;
@@ -25,7 +27,7 @@ interface DataTab {
   id: string; title: string; connectionId: string;
   query: string; code: string;
   rows: any[]; columns: string[];
-  loading: boolean; error: string; queryRan: boolean;
+  loading: boolean; error: string; warning?: string; queryRan: boolean;
 }
 
 const API = "http://localhost:3001";
@@ -116,10 +118,14 @@ export default function DevDashboard() {
   const [renderCounter, setRenderCounter] = useState(0);
 
   // ── Saved Components & Dashboard ─────────────────────────────────────
-  const { devMeasures = [], devCanvas = [] } = useDataStore() as any; // Using dev assets from store
+  const { devMeasures = [], devCanvas = [], devDrafts = [], saveDraft, loadDraft, deleteDraft, refreshDrafts } = useDataStore() as any;
   const savedComponents = devMeasures;
   const dashItems = devCanvas;
   const [showDashboard, setShowDashboard] = useState(false);
+  // Draft state
+  const [currentDraftId, setCurrentDraftId] = useState<string | null>(null);
+  const [draftMenuOpen, setDraftMenuOpen] = useState<string | null>(null);
+  const [draftSaving, setDraftSaving] = useState(false);
 
   // ── Tutorial ──────────────────────────────────────────────────────────
   const [showTutorial, setShowTutorial] = useState(false);
@@ -127,11 +133,31 @@ export default function DevDashboard() {
 
   // ── Dev Workflow State ────────────────────────────────────────────────
   const { systemDashboards } = useDataStore();
-  const [viewMode, setViewMode] = useState<'landing' | 'main' | 'edit_selection' | 'basico'>('landing');
+  const [viewMode, setViewMode] = useState<'landing' | 'main' | 'edit_selection' | 'basico' | 'drafts'>('landing');
   const [workspaceMode, setWorkspaceMode] = useState<'graphic' | 'code' | 'relations'>('graphic');
   const [showLeftPanel, setShowLeftPanel] = useState(true);
   const [showRightPanel, setShowRightPanel] = useState(true);
-  
+  const [showMarketplace, setShowMarketplace] = useState(false);
+  // Marketplace state moved to DashboardBuilder
+
+  // ── Auto-Save Draft every 60s ────────────────────────────────────────────
+  const tabsRef = React.useRef(tabs);
+  const connectionsRef = React.useRef(connections);
+  const dashItemsRef = React.useRef(dashItems);
+  useEffect(() => { tabsRef.current = tabs; }, [tabs]);
+  useEffect(() => { connectionsRef.current = connections; }, [connections]);
+  useEffect(() => { dashItemsRef.current = dashItems; }, [dashItems]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (viewMode === 'main' && (tabsRef.current.length > 0 || dashItemsRef.current.length > 0)) {
+        const autoId = currentDraftId || `auto_${user?.id}`;
+        saveDraft(autoId, 'SIN NOMBRE', dashItemsRef.current, tabsRef.current, connectionsRef.current);
+      }
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [viewMode, currentDraftId, saveDraft]); // eslint-disable-line
+
   const [isDragging, setIsDragging] = useState(false);
   const [activeVisualType, setActiveVisualType] = useState<string | null>(null);
   
@@ -254,7 +280,7 @@ export default function DevDashboard() {
       id, title: `${schema}.${table}`, connectionId: conn.id,
       query: `SELECT TOP 500 *\nFROM [${schema}].[${table}]`,
       code: DEFAULT_CODE(`${schema}.${table}`),
-      rows: [], columns: [], loading: false, error: "", queryRan: false
+      rows: [], columns: [], loading: false, error: "", warning: "", queryRan: false
     };
     setTabs(prev => [...prev, newTab]);
     setActiveTabId(id);
@@ -273,7 +299,7 @@ export default function DevDashboard() {
       id, title: "Script", connectionId: connections[0]?.id || "",
       query: "SELECT TOP 100 *\nFROM [dbo].[tu_tabla]",
       code: DEFAULT_CODE("tu_tabla"),
-      rows: [], columns: [], loading: false, error: "", queryRan: false
+      rows: [], columns: [], loading: false, error: "", warning: "", queryRan: false
     };
     setTabs(prev => [...prev, newTab]);
     setActiveTabId(id);
@@ -385,13 +411,159 @@ export default function DevDashboard() {
   const runQuery = async (tab: DataTab, explicitConn?: Connection) => {
     const conn = explicitConn || connections.find(c => c.id === tab.connectionId);
     if (!conn) { patchTab(tab.id, { error: "Selecciona una conexión válida." }); return; }
-    patchTab(tab.id, { loading: true, error: "", queryRan: false });
+    
+    // --- SAFETY PRE-CHECK: SUM/AVG ON NVARCHAR ---
+    const sqlLower = tab.query.toLowerCase();
+    if (sqlLower.includes('sum(') || sqlLower.includes('avg(')) {
+      for (const tt of trackedTables) {
+        if (sqlLower.includes(tt.table.toLowerCase())) {
+          for (const col of tt.columns) {
+            const colName = col.COLUMN_NAME.toLowerCase();
+            const isNvarchar = col.DATA_TYPE.toLowerCase().includes('char') || col.DATA_TYPE.toLowerCase().includes('text');
+            if (isNvarchar && (sqlLower.includes(`sum([${colName}])`) || sqlLower.includes(`avg([${colName}])`) || sqlLower.includes(`sum(${colName})`) || sqlLower.includes(`avg(${colName})`))) {
+              if (!window.confirm(`⚠️ ADVERTENCIA DE TIPO SQL\n\nEstás intentando SUMAR o PROMEDIAR la columna [${col.COLUMN_NAME}], que es de tipo ${col.DATA_TYPE}.\n\nSQL Server no permite operaciones matemáticas sobre texto. ¿Quieres intentar ejecutar de todos modos?`)) {
+                return;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    patchTab(tab.id, { loading: true, error: "", warning: "", queryRan: false });
     try {
       const d = await apiFetch("/api/query", { host: conn.host, database: conn.database, username: conn.username, password: conn.password, query: tab.query });
-      if (d.success) patchTab(tab.id, { rows: d.rows, columns: d.columns, loading: false, queryRan: true });
+      if (d.success) patchTab(tab.id, { rows: d.rows, columns: d.columns, warning: d.warning || "", loading: false, queryRan: true });
       else patchTab(tab.id, { error: d.error, loading: false });
     } catch {
       patchTab(tab.id, { error: "No se puede conectar al backend. Ejecuta: npm run api", loading: false });
+    }
+  };
+
+  const optimizeQuery = (tab: DataTab) => {
+    // Extract table name from current query (supports [schema].[table] and schema.table)
+    const tableMatch = tab.query.match(/FROM\s+\[?([\w]+)\]?\.\[?([\w]+)\]?/i) 
+                    || tab.query.match(/FROM\s+\[?([\w.]+)\]?/i);
+    const tableName = tableMatch 
+      ? (tableMatch[2] ? `[${tableMatch[1]}].[${tableMatch[2]}]` : tableMatch[1]) 
+      : 'tu_tabla';
+
+    let optimized = '';
+
+    if (activeVisualType === 'matrix') {
+      // Matrix needs: row dims, col dims, and aggregated values
+      const rowDims   = visualMapping.rows  || [];
+      const colDims   = visualMapping.cols  || [];
+      const measures  = visualMapping.values || [];
+
+      if (rowDims.length === 0 && colDims.length === 0) {
+        alert('⚠️ Para Matriz: arrastra campos a FILAS y COLUMNAS primero.');
+        return;
+      }
+      if (measures.length === 0) {
+        alert('⚠️ Para Matriz: arrastra al menos un campo a VALORES con su función (SUM, COUNT…).');
+        return;
+      }
+
+      const dims = [...rowDims, ...colDims];
+      const dimSelects  = dims.map(d => `[${d.name}]`).join(', ');
+      const valSelects  = measures.map(v => `${(v.agg||'COUNT').toUpperCase()}([${v.name}]) AS [${v.name}]`).join(', ');
+      const groupBy     = dims.map(d => `[${d.name}]`).join(', ');
+
+      optimized = `SELECT ${dimSelects}, ${valSelects}\nFROM ${tableName}\nGROUP BY ${groupBy}\nORDER BY ${groupBy}`;
+
+    } else if (activeVisualType === 'slicer') {
+      // Slicer just needs distinct values for the filter field
+      const field = visualMapping.field?.[0] || visualMapping.xAxis?.[0];
+      if (!field) {
+        alert('⚠️ Para Filtro (Slicer): arrastra un campo al slot de campo primero.');
+        return;
+      }
+      optimized = `SELECT DISTINCT [${field.name}]\nFROM ${tableName}\nORDER BY [${field.name}] ASC`;
+
+    } else if (activeVisualType === 'card') {
+      // Card needs a single aggregated value
+      const measure = visualMapping.value?.[0] || visualMapping.values?.[0] || visualMapping.yAxis?.[0];
+      if (!measure) {
+        alert('⚠️ Para Tarjeta: arrastra un campo de medida al slot de Valor.');
+        return;
+      }
+
+      const getColType = (name: string) => {
+        for (const tt of trackedTables) {
+          const col = tt.columns.find(c => c.COLUMN_NAME === name);
+          if (col) return col.DATA_TYPE.toLowerCase();
+        }
+        return 'unknown';
+      };
+
+      const isNumeric = (colName: string) => {
+        const type = getColType(colName).toLowerCase();
+        return ['int', 'bigint', 'decimal', 'float', 'real', 'money', 'numeric', 'smallint', 'tinyint'].includes(type);
+      };
+
+      const wrapAgg = (m: any) => {
+        const agg = (m.agg || 'SUM').toUpperCase();
+        if (agg === 'NONE') return `[${m.name}]`;
+        if ((agg === 'SUM' || agg === 'AVG' || agg === 'STDEV') && !isNumeric(m.name)) {
+          console.warn(`[Optimizer] Applying TRY_CAST for string math on ${m.name}`);
+          return `${agg}(TRY_CAST([${m.name}] AS FLOAT))`;
+        }
+        return `${agg}([${m.name}])`;
+      };
+
+      optimized = `SELECT ${wrapAgg(measure)} AS [${measure.name}]\nFROM ${tableName}`;
+
+    } else {
+      // Bar, Line, Area, Pie, Donut, Table — use xAxis + yAxis/values
+      const xAxis  = visualMapping.xAxis?.[0]?.name || visualMapping.cols?.[0]?.name;
+      const values = visualMapping.yAxis?.length > 0 ? visualMapping.yAxis : (visualMapping.values || []);
+
+      if (!xAxis || values.length === 0) {
+        alert('⚠️ Arrastra campos al Eje X y a Valores para optimizar la consulta.');
+        return;
+      }
+
+      const getColType = (name: string) => {
+        for (const tt of trackedTables) {
+          const col = tt.columns.find(c => c.COLUMN_NAME === name);
+          if (col) return col.DATA_TYPE.toLowerCase();
+        }
+        return 'unknown';
+      };
+
+      const isNumeric = (colName: string) => {
+        const type = getColType(colName);
+        return ['int', 'bigint', 'decimal', 'float', 'real', 'money', 'numeric', 'smallint', 'tinyint'].includes(type);
+      };
+
+      const wrapAgg = (v: any) => {
+        const agg = (v.agg || 'SUM').toUpperCase();
+        if (agg === 'NONE') return `[${v.name}]`;
+        
+        // Intelligent Math: If it's a string column but math was requested, use TRY_CAST
+        // This allows '123' to be summed, but non-numbers will be NULL (ignored by SUM)
+        if ((agg === 'SUM' || agg === 'AVG' || agg === 'STDEV') && !isNumeric(v.name)) {
+          console.log(`[Optimizer] Column ${v.name} is ${getColType(v.name)}, applying TRY_CAST to FLOAT`);
+          return `${agg}(TRY_CAST([${v.name}] AS FLOAT))`;
+        }
+        
+        return `${agg}([${v.name}])`;
+      };
+
+      const valSelects = values.map(v => `${wrapAgg(v)} AS [${v.name}]`).join(', ');
+      
+      // Fields with agg: 'none' must be in the GROUP BY
+      const extraGroups = values.filter(v => (v.agg || 'SUM').toUpperCase() === 'NONE').map(v => `[${v.name}]`);
+      const allGroups = Array.from(new Set([`[${xAxis}]`, ...extraGroups])).join(', ');
+
+      optimized = `SELECT [${xAxis}], ${valSelects}\nFROM ${tableName}\nGROUP BY ${allGroups}\nORDER BY [${xAxis}] ASC`;
+    }
+
+    if (window.confirm(`🔥 MEGA OPTIMIZADOR\n\nSe ejecutará esta consulta contra ${tableName}.\nSQL Server procesará TODO el dataset y solo enviará el resumen al navegador.\n\n${optimized}\n\n¿Ejecutar?`)) {
+      patchTab(tab.id, { query: optimized });
+      const conn = connections.find(c => c.id === tab.connectionId);
+      if (conn) runQuery({ ...tab, query: optimized }, conn);
     }
   };
 
@@ -410,12 +582,33 @@ export default function DevDashboard() {
   const saveComponent = (tab: DataTab) => {
     const name = prompt("Nombre del componente:", tab.title);
     if (!name) return;
-    const comp = { id: `comp-${Date.now()}`, name, code: tab.code, rows: tab.rows, columns: tab.columns };
+    const comp = { 
+      id: `comp-${Date.now()}`, 
+      name, 
+      code: tab.code, 
+      query: tab.query,
+      connectionId: tab.connectionId,
+      rows: tab.rows, 
+      columns: tab.columns 
+    };
     saveDevMeasure(comp);
   };
 
   const addToDashboard = (comp: any) => {
-    const updated = [...dashItems, { ...comp, instanceId: `inst-${Date.now()}` }];
+    // Explicitly ensure the item has the necessary fields for InjectedWidget
+    const itemToAdd = {
+      ...comp,
+      instanceId: `inst-${Date.now()}`,
+      // Fallback for older saved components
+      query: comp.query || '',
+      connectionId: comp.connectionId || '',
+      executionJSON: JSON.stringify({
+        dataSourceId: comp.connectionId,
+        rawQuery: comp.query,
+        visualType: comp.visualType
+      })
+    };
+    const updated = [...dashItems, itemToAdd];
     saveDevCanvas(updated);
   };
 
@@ -532,8 +725,122 @@ export default function DevDashboard() {
                 <FileText className="w-32 h-32" />
               </div>
             </div>
+
+            {/* Borradores Card */}
+            <div 
+              onClick={() => { refreshDrafts && refreshDrafts(); setViewMode('drafts'); }}
+              className={`group relative p-8 rounded-3xl border-2 transition-all duration-300 cursor-pointer overflow-hidden ${
+                dark ? 'bg-[#161b22] border-slate-800 hover:border-emerald-500 hover:bg-[#1c232d]' : 'bg-white border-slate-200 hover:border-emerald-500 hover:bg-emerald-50/30'
+              }`}
+            >
+              <div className="relative z-10">
+                <div className="w-14 h-14 bg-emerald-600/10 rounded-2xl flex items-center justify-center text-emerald-500 mb-6 group-hover:scale-110 transition-transform duration-300">
+                  <Save className="w-8 h-8" />
+                </div>
+                <h3 className="text-2xl font-bold mb-2">Borradores</h3>
+                <p className={`${theme.muted} text-sm leading-relaxed mb-6`}>
+                  Retoma un trabajo guardado. Todos los desarrolladores pueden ver y colaborar en los borradores compartidos del equipo.
+                </p>
+                <div className="flex items-center gap-2 text-emerald-500 font-bold text-sm">
+                  Ver Borradores <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                </div>
+              </div>
+              <div className="absolute -right-4 -bottom-4 opacity-5 group-hover:opacity-10 transition-opacity">
+                <Save className="w-32 h-32" />
+              </div>
+            </div>
           </div>
         </div>
+      </div>
+    );
+  }
+
+  // ── RENDER: BORRADORES ──
+  if (viewMode === 'drafts') {
+    const formatDate = (iso: string) => {
+      if (!iso) return '';
+      try {
+        return new Date(iso).toLocaleString('es-MX', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      } catch { return iso; }
+    };
+    return (
+      <div className={`flex flex-col h-screen ${theme.bg} ${theme.text} font-sans transition-all duration-500`}>
+        <header className={`h-16 ${theme.surface} ${theme.border} border-b flex items-center justify-between px-8 shrink-0`}>
+          <div className="flex items-center gap-4">
+            <button onClick={() => setViewMode('landing')} className={`p-2 rounded-xl border ${theme.border} ${theme.hover} transition`}>
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+            <h2 className="text-xl font-bold flex items-center gap-3">
+              <Save className="w-5 h-5 text-emerald-500" /> Borradores del Equipo
+            </h2>
+          </div>
+          <span className={`text-xs ${theme.muted}`}>{devDrafts.length} borrador{devDrafts.length !== 1 ? 'es' : ''} guardado{devDrafts.length !== 1 ? 's' : ''}</span>
+        </header>
+
+        <main className="flex-1 overflow-y-auto p-8">
+          {devDrafts.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full gap-4 opacity-40">
+              <Save className="w-16 h-16" />
+              <p className="text-lg font-bold">Aún no hay borradores guardados.</p>
+              <p className={`text-sm ${theme.muted}`}>Crea un nuevo lienzo y usa "Guardar Borrador" para que aparezca aquí.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-6xl mx-auto">
+              {devDrafts.map((draft: any) => (
+                <div key={draft.id} className={`relative rounded-2xl border transition-all duration-200 overflow-hidden group ${
+                  dark ? 'bg-[#161b22] border-slate-800 hover:border-emerald-500/50' : 'bg-white border-slate-200 hover:border-emerald-400 shadow-sm hover:shadow-md'
+                }`}>
+                  <div className="p-6">
+                    <div className="flex items-start justify-between mb-4">
+                      <div className="w-12 h-12 bg-emerald-600/10 rounded-xl flex items-center justify-center text-emerald-500 shrink-0">
+                        <Save className="w-6 h-6" />
+                      </div>
+                      {/* 3-dot menu */}
+                      <div className="relative">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setDraftMenuOpen(draftMenuOpen === draft.id ? null : draft.id); }}
+                          className={`p-1.5 rounded-lg ${theme.hover} ${theme.muted} transition opacity-0 group-hover:opacity-100`}
+                        >
+                          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                            <circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/>
+                          </svg>
+                        </button>
+                        {draftMenuOpen === draft.id && (
+                          <div className={`absolute right-0 top-8 z-30 rounded-xl border shadow-xl py-1 min-w-[150px] ${
+                            dark ? 'bg-slate-800 border-slate-700' : 'bg-white border-slate-200'
+                          }`}>
+                            <button
+                              onClick={async () => { setDraftMenuOpen(null); if (window.confirm(`¿Eliminar el borrador "${draft.name}"?`)) { await deleteDraft(draft.id); } }}
+                              className="w-full flex items-center gap-2 px-4 py-2 text-sm text-red-400 hover:bg-red-500/10 transition">
+                              <X className="w-4 h-4" /> Eliminar
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <h3 className="font-bold text-base mb-1 truncate" title={draft.name}>{draft.name}</h3>
+                    <p className={`text-xs ${theme.muted} mb-1`}>Por: <span className="font-medium">{draft.authorName}</span></p>
+                    <p className={`text-xs ${theme.muted}`}>{formatDate(draft.updatedAt)}</p>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      const loaded = await loadDraft(draft.id);
+                      if (!loaded) return;
+                      setCurrentDraftId(draft.id);
+                      // Restore connections from draft if any
+                      // Only restore tabs (layout); data will re-run queries
+                      setViewMode('main');
+                    }}
+                    className="w-full py-3 border-t text-xs font-bold tracking-wider uppercase text-emerald-500 hover:bg-emerald-500/10 transition"
+                    style={{ borderColor: dark ? '#1e293b' : '#f1f5f9' }}
+                  >
+                    Abrir y Continuar →
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </main>
       </div>
     );
   }
@@ -712,6 +1019,7 @@ export default function DevDashboard() {
         </div>
         <div className="flex items-center gap-2">
           <span className={`text-xs ${theme.muted} hidden sm:block`}>{user?.firstName} {user?.lastName}</span>
+          
           <button
             onClick={() => {
               if (dashItems.length > 0 && !window.confirm("¿Deseas limpiar el lienzo actual para crear uno nuevo?")) return;
@@ -722,6 +1030,28 @@ export default function DevDashboard() {
           >
             <Plus className="w-3.5 h-3.5" />
             Nuevo
+          </button>
+          <button
+            onClick={async () => {
+              setDraftSaving(true);
+              const draftName = prompt('Nombre del borrador:', currentDraftId ? undefined : 'Mi Borrador');
+              if (draftName === null) { setDraftSaving(false); return; } // cancelled
+              const draftId = currentDraftId || `draft_${Date.now()}`;
+              const result = await saveDraft(draftId, draftName || 'SIN NOMBRE', dashItems, tabs, connections);
+              if (result) {
+                setCurrentDraftId(draftId);
+                alert(`✅ Borrador "${draftName || 'SIN NOMBRE'}" guardado correctamente.`);
+              } else {
+                alert('⚠️ No se pudo guardar el borrador. Verifica que el API esté activo.');
+              }
+              setDraftSaving(false);
+            }}
+            disabled={draftSaving}
+            className="flex items-center gap-1.5 text-[10px] uppercase font-black bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 px-2.5 py-1.5 rounded transition border border-emerald-600/30 shadow-lg shadow-emerald-900/20 disabled:opacity-50"
+            title="Guardar el lienzo actual como Borrador compartido"
+          >
+            {draftSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+            {currentDraftId ? 'Actualizar' : 'Borrador'}
           </button>
           <button
             onClick={() => setShowDashboard(true)}
@@ -868,17 +1198,30 @@ export default function DevDashboard() {
                     value={activeTab.connectionId} onChange={e => patchTab(activeTabId!, { connectionId: e.target.value })}>
                     {connections.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
-                  <button onClick={() => runQuery(activeTab)} disabled={activeTab.loading}
-                    className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white px-3 py-1 rounded text-xs font-bold flex items-center gap-1 justify-center transition">
-                    {activeTab.loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
-                    {activeTab.loading ? "..." : "Run"}
-                  </button>
+                  <div className="flex gap-1.5">
+                    <button onClick={() => runQuery(activeTab)} disabled={activeTab.loading}
+                      className="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white px-3 py-1 rounded text-xs font-bold flex items-center gap-1 justify-center transition">
+                      {activeTab.loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                      {activeTab.loading ? "..." : "Run"}
+                    </button>
+                    <button onClick={() => optimizeQuery(activeTab)} disabled={activeTab.loading}
+                      className="flex-1 bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-500 hover:to-red-500 disabled:opacity-50 text-white px-2 py-1 rounded text-[10px] font-black uppercase tracking-tighter flex items-center gap-1 justify-center transition shadow-lg shadow-orange-500/20"
+                      title="Optimización para Big Data: Genera una consulta GROUP BY basada en tus visuales">
+                      Mega Optimizador 🔥
+                    </button>
+                  </div>
                 </div>
               </div>
 
               {activeTab.error && (
                 <div className="px-4 py-2 bg-red-900/20 border-b border-red-900/40 text-xs text-red-400 font-mono shrink-0 flex items-center gap-2">
                   <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {activeTab.error}
+                </div>
+              )}
+
+              {activeTab.warning && (
+                <div className="px-4 py-2 bg-yellow-900/20 border-b border-yellow-900/40 text-xs text-yellow-500 font-mono shrink-0 flex items-center gap-2">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {activeTab.warning}
                 </div>
               )}
 
@@ -1214,17 +1557,39 @@ export default function DevDashboard() {
 
           {/* Saved Components list (BANCO DE GRÁFICOS) */}
           {savedComponents.length > 0 && (
-            <div className={`${theme.border} border-t`}>
-              <div className={`px-3 py-2 text-[10px] font-black ${theme.muted} uppercase tracking-widest text-indigo-500`}>Banco de Gráficos ({savedComponents.length})</div>
-              <div className="max-h-56 overflow-y-auto">
+            <div className={`${theme.border} border-t flex-1 flex flex-col min-h-0`}>
+              <div className={`px-4 py-3 text-[10px] font-black ${theme.muted} uppercase tracking-widest text-indigo-500 flex justify-between items-center`}>
+                <span>Banco de Gráficos ({savedComponents.length})</span>
+                <LayoutPanelTop className="w-3.5 h-3.5 opacity-50" />
+              </div>
+              
+              <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-4 scrollbar-hide">
                 {savedComponents.map((sc: any) => (
-                  <div key={sc.id} className={`flex items-center gap-1 px-2 py-1 text-xs ${theme.hover} group`}>
-                    <BarChart3 className="w-3 h-3 text-indigo-400 shrink-0" />
-                    <span className="flex-1 truncate text-[11px]">{sc.name}</span>
-                    <button onClick={() => addToDashboard(sc)} title="Agregar al dashboard"
-                      className="opacity-0 group-hover:opacity-100 text-emerald-400 hover:text-emerald-300 transition text-[10px] px-1">+DB</button>
-                    <button onClick={() => deleteSavedComponent(sc.id)}
-                      className="opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-400 transition"><X className="w-3 h-3" /></button>
+                  <div key={sc.id} className="relative group animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <MiniChartPreview 
+                      name={sc.name}
+                      code={sc.code}
+                      rows={sc.rows || []}
+                      columns={sc.columns || []}
+                      dark={dark}
+                    />
+                    
+                    {/* Action Buttons overlayed on the preview card */}
+                    <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-20">
+                      <button 
+                        onClick={() => addToDashboard(sc)} 
+                        title="Agregar al lienzo"
+                        className="bg-emerald-600 hover:bg-emerald-500 text-white p-1.5 rounded-lg shadow-lg shadow-emerald-900/20 transition-transform active:scale-95"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                      <button 
+                        onClick={() => deleteSavedComponent(sc.id)}
+                        className="bg-red-600 hover:bg-red-500 text-white p-1.5 rounded-lg shadow-lg shadow-red-900/20 transition-transform active:scale-95"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1237,6 +1602,7 @@ export default function DevDashboard() {
       {showDashboard && (
         <DashboardBuilder
           components={savedComponents}
+          connections={connections}
           dark={dark}
           onClose={() => setShowDashboard(false)}
         />
@@ -1298,6 +1664,7 @@ export default function DevDashboard() {
           </div>
         </div>
       )}
+
 
       {/* ── Tutorial ─────────────────────────────────────────────────── */}
       {showTutorial && (

@@ -146,27 +146,33 @@ export default function DashboardDetail({ dashboard, onBack }: DashboardDetailPr
           </div>
           
           <div className="relative" style={{ minHeight: '1000px' }}>
-            {config.components.map((comp: any, idx: number) => (
-              <div
-                key={idx}
-                className="absolute bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden"
-                style={{
-                  left: comp.x,
-                  top: comp.y,
-                  width: comp.w,
-                  height: comp.h,
-                }}
-              >
-                <div style={{ height: comp.h }}>
-                  <LiveWidget 
-                    code={comp.code} 
-                    rows={comp.rows} 
-                    columns={comp.columns} 
-                    padding={20}
-                  />
+            {config.components.map((comp: any, idx: number) => {
+              const instanceId = comp.instanceId || `user-comp-${idx}`;
+              return (
+                <div
+                  key={instanceId}
+                  className="absolute bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden"
+                  style={{
+                    left: comp.x,
+                    top: comp.y,
+                    width: comp.w,
+                    height: comp.h,
+                  }}
+                >
+                  <div style={{ height: comp.h }}>
+                    <LiveWidget 
+                      instanceId={instanceId}
+                      code={comp.code} 
+                      rows={comp.rows || []} 
+                      columns={comp.columns || []} 
+                      query={comp.query}
+                      connectionId={comp.connectionId}
+                      padding={20}
+                    />
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       ) : (
