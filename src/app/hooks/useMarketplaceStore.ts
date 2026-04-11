@@ -1,7 +1,15 @@
 import { create } from 'zustand';
 import { MarketplaceWidget, DashboardWidgetInstance } from '../types/measure';
 
-const API = "http://localhost:3001";
+const getEnv = (key: string, fallback: string) => {
+  try {
+    return (import.meta as any).env[key] || fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const API = getEnv("VITE_API_URL", "http://localhost:3001");
 
 interface MarketplaceState {
   widgets: MarketplaceWidget[];
@@ -22,7 +30,7 @@ interface MarketplaceState {
   updateInstanceProps: (instanceId: string, props: any) => void;
   
   // NEW: Favorites & CRUD
-  toggleFavorite: (widgetId: string) => Promise<void>;
+  toggleFavorite: (widgetId: string) => Promise<{ success: boolean; isFavorite?: boolean } | null>;
   deleteWidget: (widgetId: string) => Promise<void>;
   updateWidget: (widgetId: string, data: { name: string, description: string }) => Promise<void>;
 }
@@ -70,8 +78,13 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
         set(state => ({
           widgets: state.widgets.map(w => w.id === widgetId ? { ...w, isFavorite: data.isFavorite } : w)
         }));
+        return { success: true, isFavorite: data.isFavorite };
       }
-    } catch (e) { console.error("Toggle Favorite failed", e); }
+      return { success: false };
+    } catch (e) { 
+      console.error("Toggle Favorite failed", e); 
+      return { success: false };
+    }
   },
 
   deleteWidget: async (widgetId) => {

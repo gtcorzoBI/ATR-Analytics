@@ -4,45 +4,42 @@ import { useDev } from '../../context/DevContext';
 import { useDataStore } from '../../hooks/useDataStore';
 
 export default function DevSidebar() {
-  const { dark, dataSources, setTrackedTables, setTabs, setActiveTabId, tabs } = useDev();
-  const { saveDevSource, deleteDevSource } = useDataStore() as any;
+  const { dark, theme, dataSources, setTrackedTables, setTabs, setActiveTabId, tabs } = useDev();
+  const { saveDevSource, deleteDevSource, tables, fetchTables } = useDataStore() as any;
   
   const [showAddConn, setShowAddConn] = useState(false);
   const [connForm, setConnForm] = useState({ name: "", host: "localhost", database: "", username: "sa", password: "" });
   const [connTesting, setConnTesting] = useState(false);
   const [connTestMsg, setConnTestMsg] = useState<{ok: boolean, msg: string} | null>(null);
   const [expandedConn, setExpandedConn] = useState<string | null>(null);
-  const [tablesMap, setTablesMap] = useState<Record<string, any[]>>({});
   const [loadingTables, setLoadingTables] = useState<string | null>(null);
   const [tableSearch, setTableSearch] = useState("");
 
-  const theme = {
-    surface: dark ? "bg-[#161b22]" : "bg-white",
-    border: dark ? "border-slate-800" : "border-slate-200",
-    text: dark ? "text-slate-200" : "text-slate-900",
-    muted: dark ? "text-slate-400" : "text-slate-500",
-    input: dark ? "bg-slate-800 border-slate-600 text-white placeholder-slate-500" : "bg-white border-slate-300 text-slate-900 placeholder-slate-400",
-    hover: dark ? "hover:bg-slate-800/60" : "hover:bg-slate-100",
+  const getEnv = (key: string, fallback: string) => {
+    try {
+      return (import.meta as any).env[key] || fallback;
+    } catch {
+      return fallback;
+    }
   };
 
-  const API = "http://localhost:3001";
+  const API = getEnv("VITE_API_URL", "http://localhost:3001");
 
   const toggleConn = async (conn: any) => {
     if (expandedConn === conn.id) {
       setExpandedConn(null); return;
     }
     setExpandedConn(conn.id);
-    if (tablesMap[conn.id]) return;
+    if (tables[conn.id]) return;
 
     setLoadingTables(conn.id);
     try {
-      const token = localStorage.getItem("atr_token");
-      const res = await fetch(`${API}/api/dev/tables?host=${conn.host}&db=${conn.database}&user=${conn.username}&pass=${conn.password}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const data = await res.json();
-      if (data.tables) setTablesMap(prev => ({ ...prev, [conn.id]: data.tables }));
-    } catch (e) { console.error(e); } finally { setLoadingTables(null); }
+      await fetchTables(conn);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoadingTables(null);
+    }
   };
 
   const toggleTrackedTable = async (conn: any, schema: string, table: string) => {
@@ -140,8 +137,11 @@ export default function DevSidebar() {
                   </div>
                 </div>
                 <div className="max-h-60 overflow-y-auto px-1">
-                  {(tablesMap[conn.id] || [])
-                    .filter(t => t.TABLE_NAME.toLowerCase().includes(tableSearch.toLowerCase()))
+                  {(tables[conn.id] || [])
+                    .filter((t: any) => {
+                       const name = typeof t === 'string' ? t : t.TABLE_NAME || "";
+                       return name.toLowerCase().includes(tableSearch.toLowerCase());
+                    })
                     .map((t, idx) => (
                     <div 
                       key={idx}

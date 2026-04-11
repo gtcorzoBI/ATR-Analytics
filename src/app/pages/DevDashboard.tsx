@@ -2,6 +2,8 @@ import React, { useEffect } from 'react';
 import { DevProvider, useDev } from '../context/DevContext';
 import { useAuth } from '../context/AuthContext';
 import { useDataStore } from '../hooks/useDataStore';
+import { DndProvider } from 'react-dnd';
+import { HTML5Backend } from 'react-dnd-html5-backend';
 
 // Modular Components
 import DevHeader from '../components/dev/DevHeader';
@@ -10,6 +12,7 @@ import DevSidebar from '../components/dev/DevSidebar';
 import DevWorkspace from '../components/dev/DevWorkspace';
 import GraphBank from '../components/dev/GraphBank';
 import DashboardBuilder from '../components/DashboardBuilder';
+import DataExplorer from '../components/dev/canvas/DataExplorer';
 
 function DevDashboardContent() {
   const { user } = useAuth();
@@ -35,8 +38,16 @@ function DevDashboardContent() {
   if (viewMode === 'landing' || viewMode === 'edit_selection') {
     return (
         <div className={`flex flex-col h-screen ${theme.bg} ${theme.text} transition-colors duration-500`}>
-            {/* Header placeholder or minimal header */}
             <DevLanding />
+        </div>
+    );
+  }
+
+  if (viewMode === 'canvas_setup') {
+    return (
+        <div className={`flex flex-col h-screen ${theme.bg} ${theme.text} transition-colors duration-200`}>
+            <DevHeader />
+            <DataExplorer />
         </div>
     );
   }
@@ -66,8 +77,10 @@ function DevDashboardContent() {
 
 export default function DevDashboard() {
   return (
-    <DevProvider>
-      <DevDashboardContent />
-    </DevProvider>
+    <DndProvider backend={HTML5Backend}>
+      <DevProvider>
+        <DevDashboardContent />
+      </DevProvider>
+    </DndProvider>
   );
 }

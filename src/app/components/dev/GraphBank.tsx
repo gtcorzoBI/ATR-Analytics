@@ -5,15 +5,8 @@ import { useDataStore } from '../../hooks/useDataStore';
 import MiniChartPreview from '../MiniChartPreview';
 
 export default function GraphBank() {
-  const { dark, savedComponents, dashItems } = useDev();
+  const { dark, theme, savedComponents, dashItems } = useDev();
   const { saveDevCanvas, deleteDevMeasure } = useDataStore() as any;
-
-  const theme = {
-    surface: dark ? "bg-[#161b22]" : "bg-white",
-    border: dark ? "border-slate-800" : "border-slate-200",
-    text: dark ? "text-slate-200" : "text-slate-900",
-    muted: dark ? "text-slate-400" : "text-slate-500",
-  };
 
   const addToDashboard = (comp: any) => {
     const itemToAdd = {

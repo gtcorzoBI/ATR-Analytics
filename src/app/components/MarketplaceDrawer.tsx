@@ -9,7 +9,16 @@ import {
 } from 'lucide-react';
 import { useMarketplaceStore } from '../hooks/useMarketplaceStore';
 import { useAuth } from '../context/AuthContext';
-import confetti from 'canvas-confetti';
+
+const getEnv = (key: string, fallback: string) => {
+  try {
+    return (import.meta as any).env[key] || fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const API = getEnv("VITE_API_URL", "http://localhost:3001");
 
 interface MarketplaceDrawerProps {
   isOpen: boolean;
@@ -79,21 +88,13 @@ export default function MarketplaceDrawer({ isOpen, onClose, onInject, onEdit }:
 
   const handleFavoriteClick = async (e: React.MouseEvent, widgetId: string) => {
     e.stopPropagation();
-    const result = await toggleFavorite(widgetId);
-    if (result && result.isFavorite) {
-       confetti({
-         particleCount: 150,
-         spread: 70,
-         origin: { y: 0.6 },
-         colors: ['#ff2d55', '#ffac33', '#ffffff']
-       });
-    }
+    await toggleFavorite(widgetId);
   };
 
   const handleToggleVisibility = async (widget: any) => {
     const token = localStorage.getItem("atr_token");
     try {
-      await fetch(`http://localhost:3001/api/marketplace/widgets/${widget.id}/visibility`, {
+      await fetch(`${API}/api/marketplace/widgets/${widget.id}/visibility`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ isHidden: !widget.isHidden })

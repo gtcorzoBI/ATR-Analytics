@@ -1,6 +1,14 @@
 import { create } from 'zustand';
 
-const API = "http://localhost:3001";
+const getEnv = (key: string, fallback: string) => {
+  try {
+    return (import.meta as any).env[key] || fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const API = getEnv("VITE_API_URL", "http://localhost:3001");
 
 interface QueryResult {
   columns: string[];
