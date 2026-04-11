@@ -110,8 +110,41 @@ const notify = () => listeners.forEach((l) => l());
 let internal_users: User[] =
   JSON.parse(localStorage.getItem("atr_users") || "null") || INITIAL_USERS;
 let internal_smtp: any = JSON.parse(localStorage.getItem("atr_smtp") || "{}");
+let internal_templates: any = JSON.parse(
+  localStorage.getItem("atr_mail_templates") || "null"
+) || {
+  welcome: "Bienvenido a DataCanvas O.S.",
+  area: "Se te ha asignado una nueva área.",
+  dash: "Nuevo dashboard disponible.",
+  pass: "Tu contraseña ha sido restablecida.",
+};
 
-const API = "http://localhost:3001";
+let internal_sources: any[] = JSON.parse(
+  localStorage.getItem("atr_dev_sources") || "[]"
+);
+let internal_measures: any[] = JSON.parse(
+  localStorage.getItem("atr_dev_measures") || "[]"
+);
+let internal_canvas: any[] = JSON.parse(
+  localStorage.getItem("atr_dev_canvas") || "[]"
+);
+let internal_published: any[] = JSON.parse(
+  localStorage.getItem("atr_published_dashboards") || "[]"
+);
+let internal_system: Record<string, any[]> = 
+  JSON.parse(localStorage.getItem("atr_system_dashboards") || "null") || INITIAL_DASHBOARDS_MAP;
+let internal_drafts: any[] = [];
+let internal_tables_map: Record<string, any[]> = {};
+
+const getEnv = (key: string, fallback: string) => {
+  try {
+    return (import.meta as any).env[key] || fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const API = getEnv("VITE_API_URL", "http://localhost:3001");
 
 // Helper: generic fetch and parse
 const fetchFromBackend = async (endpoint: string) => {
@@ -131,31 +164,6 @@ const fetchFromBackend = async (endpoint: string) => {
   return null;
 };
 
-let internal_templates: any = JSON.parse(
-  localStorage.getItem("atr_mail_templates") || "null"
-) || {
-  welcome: "Bienvenido a DataCanvas O.S.",
-  area: "Se te ha asignado una nueva área.",
-  dash: "Nuevo dashboard disponible.",
-  pass: "Tu contraseña ha sido restablecida.",
-};
-let internal_sources: any[] = JSON.parse(
-  localStorage.getItem("atr_dev_sources") || "[]"
-);
-let internal_measures: any[] = JSON.parse(
-  localStorage.getItem("atr_dev_measures") || "[]"
-);
-let internal_canvas: any[] = JSON.parse(
-  localStorage.getItem("atr_dev_canvas") || "[]"
-);
-let internal_published: any[] = JSON.parse(
-  localStorage.getItem("atr_published_dashboards") || "[]"
-);
-let internal_system: Record<string, any[]> =
-  JSON.parse(localStorage.getItem("atr_system_dashboards") || "null") ||
-  INITIAL_DASHBOARDS_MAP;
-let internal_drafts: any[] = []; // Drafts are always loaded from backend
-
 // ─── Fetch all data from backend ─────────────────────────────────────────────
 const fetchAllDataFromBackend = async () => {
   const usersData = await fetchFromBackend("/api/users");
@@ -170,35 +178,8 @@ const fetchAllDataFromBackend = async () => {
     internal_measures = devAssets.measures || [];
     internal_canvas = devAssets.canvas || [];
     internal_published = devAssets.publishedDashboards || [];
-
-    if (Object.keys(devAssets.systemDashboards || {}).length > 0) {
-      internal_system = devAssets.systemDashboards;
-    }
-
-    const liteSources = internal_sources.map((s: any) => ({ ...s, rows: [] }));
-    const liteMeasures = internal_measures.map((m: any) => ({ ...m, rows: [] }));
-    const liteCanvas = internal_canvas.map((c: any) => ({ ...c, rows: [] }));
-
-    try {
-      localStorage.setItem("atr_dev_sources", JSON.stringify(liteSources));
-      localStorage.setItem("atr_dev_measures", JSON.stringify(liteMeasures));
-      localStorage.setItem("atr_dev_canvas", JSON.stringify(liteCanvas));
-      localStorage.setItem(
-        "atr_published_dashboards",
-        JSON.stringify(internal_published)
-      );
-      localStorage.setItem(
-        "atr_system_dashboards",
-        JSON.stringify(internal_system)
-      );
-    } catch (e) {
-      console.warn(
-        "Storage quota exceeded, could not persist all dev assets to LocalStorage.",
-        e
-      );
-    }
+    internal_system = devAssets.systemDashboards || devAssets.system || INITIAL_DASHBOARDS_MAP;
   }
-
   const draftsData = await fetchFromBackend("/api/dev/drafts");
   if (draftsData && draftsData.drafts) {
     internal_drafts = draftsData.drafts;
@@ -232,9 +213,9 @@ const persistBackend = async (
   body?: any
 ) => {
   const token = localStorage.getItem("atr_token");
-  if (!token) return;
+  if (!token) return { success: false, error: "No token" };
   try {
-    await fetch(`${API}${endpoint}`, {
+    const res = await fetch(`${API}${endpoint}`, {
       method,
       headers: {
         "Content-Type": "application/json",
@@ -242,8 +223,10 @@ const persistBackend = async (
       },
       body: body ? JSON.stringify(body) : undefined,
     });
-  } catch (err) {
+    return await res.json();
+  } catch (err: any) {
     console.error(`Error syncing ${endpoint}`, err);
+    return { success: false, error: err.message };
   }
 };
 
@@ -251,6 +234,7 @@ const persistBackend = async (
 export const useDataStore = () => {
   const [, setTick] = useState(0);
   const forceUpdate = () => setTick((t) => t + 1);
+  const [diagData, setDiagData] = useState<any>(null);
 
   useEffect(() => {
     listeners.push(forceUpdate);
@@ -408,10 +392,76 @@ export const useDataStore = () => {
     dataSources: internal_sources,
     devMeasures: internal_measures,
     devCanvas: internal_canvas,
+    tables: internal_tables_map,
+
+    testSQLConnection: async (creds: any) => {
+      try {
+        const token = localStorage.getItem("atr_token");
+        const res = await fetch(`${API}/api/dev/test-connection`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(creds),
+        });
+        return await res.json();
+      } catch (e) {
+        return { success: false, error: "Error de red o servidor" };
+      }
+    },
+
+    fetchTables: async (connectionId: string) => {
+      if (!connectionId) return [];
+      try {
+        const token = localStorage.getItem("atr_token");
+        const res = await fetch(`${API}/api/dev/tables/${connectionId}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = await res.json();
+        if (data.diag) setDiagData(data.diag);
+        if (data.tables) {
+          internal_tables_map = { ...internal_tables_map, [connectionId]: data.tables };
+          notify();
+          return data.tables;
+        }
+      } catch (e) {
+        console.error("Failed to fetch tables", e);
+      }
+      return [];
+    },
+
+    fetchColumns: async (connectionId: string, table: string) => {
+      try {
+        const token = localStorage.getItem("atr_token");
+        const res = await fetch(`${API}/api/dev/columns/${connectionId}?table=${table}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = await res.json();
+        return data.columns || [];
+      } catch (e) {
+        console.error("Failed to fetch columns", e);
+        return [];
+      }
+    },
+
+    fetchPreview: async (connectionId: string, table: string) => {
+      try {
+        const token = localStorage.getItem("atr_token");
+        const res = await fetch(`${API}/api/dev/preview/${connectionId}?table=${table}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = await res.json();
+        return data; // Returns { success, rows, columns, executionTime }
+      } catch (e) {
+        console.error("Failed to fetch preview", e);
+        return { success: false, rows: [], columns: [] };
+      }
+    },
 
     clearAllDevState: async () => {
-      const oldSources = [...internal_sources];
-      const oldMeasures = [...internal_measures]; // FIX: was undefined before
+      const oldSources = [...(internal_sources || [])];
+      const oldMeasures = [...(internal_measures || [])];
       internal_sources = [];
       internal_measures = [];
       internal_canvas = [];
@@ -437,11 +487,11 @@ export const useDataStore = () => {
       }
     },
 
-    saveDevSource: (s: any) => {
+    saveDevSource: async (s: any) => {
       const src = { ...s, id: s.id || `src-${Date.now()}` };
-      internal_sources = [...internal_sources, src];
+      internal_sources = [...internal_sources.filter(x => x.id !== src.id), src];
       persist("atr_dev_sources", internal_sources);
-      persistBackend("/api/dev/sources", "POST", src);
+      return await persistBackend("/api/dev/sources", "POST", src);
     },
 
     saveDevMeasure: (m: any) => {
@@ -584,17 +634,17 @@ export const useDataStore = () => {
 
     // ── Permissions ───────────────────────────────────────────────────────────
     assignUserToArea: (userId: string, areaId: string) => {
-      internal_users = internal_users.map((u) =>
-        u.id === userId
-          ? {
-            ...u,
-            permissions: {
-              ...u.permissions,
-              areas: [...new Set([...u.permissions.areas, areaId])],
-            },
-          }
-          : u
-      );
+      internal_users = internal_users.map((u) => {
+        if (u.id !== userId) return u;
+        const current = u.permissions || { areas: [], dashboards: [] };
+        return {
+          ...u,
+          permissions: {
+            ...current,
+            areas: [...new Set([...(current.areas || []), areaId])],
+          },
+        };
+      });
       persist("atr_users", internal_users);
 
       const u = internal_users.find((u) => u.id === userId);
@@ -602,42 +652,36 @@ export const useDataStore = () => {
     },
 
     removeUserFromArea: async (userId: string, areaId: string) => {
-      internal_users = internal_users.map((u) =>
-        u.id === userId
-          ? {
-            ...u,
-            permissions: {
-              ...u.permissions,
-              areas: u.permissions.areas.filter((id: string) => id !== areaId),
-            },
-          }
-          : u
-      );
+      internal_users = internal_users.map((u) => {
+        if (u.id !== userId) return u;
+        const current = u.permissions || { areas: [], dashboards: [] };
+        return {
+          ...u,
+          permissions: {
+            ...current,
+            areas: (current.areas || []).filter((id: string) => id !== areaId),
+          },
+        };
+      });
       persist("atr_users", internal_users);
 
       const u = internal_users.find((u) => u.id === userId);
       if (u) persistBackend(`/api/users/${userId}/permissions`, "PUT", u.permissions);
     },
 
-    removeUserFromDashboard: async (
-      userId: string,
-      areaId: string,
-      dashId: string
-    ) => {
+    removeUserFromDashboard: async (userId: string, areaId: string, dashId: string) => {
       const combined = `${areaId}/${dashId}`;
-      internal_users = internal_users.map((u) =>
-        u.id === userId
-          ? {
-            ...u,
-            permissions: {
-              ...u.permissions,
-              dashboards: u.permissions.dashboards.filter(
-                (id: string) => id !== combined
-              ),
-            },
-          }
-          : u
-      );
+      internal_users = internal_users.map((u) => {
+        if (u.id !== userId) return u;
+        const current = u.permissions || { areas: [], dashboards: [] };
+        return {
+          ...u,
+          permissions: {
+            ...current,
+            dashboards: (current.dashboards || []).filter((id: string) => id !== combined),
+          },
+        };
+      });
       persist("atr_users", internal_users);
 
       const u = internal_users.find((u) => u.id === userId);
@@ -646,27 +690,37 @@ export const useDataStore = () => {
 
     assignUserToDashboard: (userId: string, areaId: string, dashId: string) => {
       const combined = `${areaId}/${dashId}`;
-      internal_users = internal_users.map((u) =>
-        u.id === userId
-          ? {
-            ...u,
-            permissions: {
-              ...u.permissions,
-              dashboards: [
-                ...new Set([...u.permissions.dashboards, combined]),
-              ],
-            },
-          }
-          : u
-      );
+      internal_users = internal_users.map((u) => {
+        if (u.id !== userId) return u;
+        const current = u.permissions || { areas: [], dashboards: [] };
+        return {
+          ...u,
+          permissions: {
+            ...current,
+            dashboards: [...new Set([...(current.dashboards || []), combined])],
+          },
+        };
+      });
       persist("atr_users", internal_users);
 
       const u = internal_users.find((u) => u.id === userId);
       if (u) persistBackend(`/api/users/${userId}/permissions`, "PUT", u.permissions);
     },
 
+    updateUserActivity: async (userId: string, dashboardTitle: string) => {
+      const now = new Date().toISOString();
+      internal_users = internal_users.map((u) =>
+        u.id === userId ? { ...u, lastActiveAt: now, lastDashboardViewed: dashboardTitle } : u
+      );
+      persist("atr_users", internal_users);
+      persistBackend(`/api/users/${userId}/activity`, "PUT", {
+        lastActiveAt: now,
+        lastDashboardViewed: dashboardTitle,
+      });
+    },
+
     // ── Drafts ────────────────────────────────────────────────────────────────
-    devDrafts: internal_drafts,
+    drafts: internal_drafts,
 
     saveDraft: async (
       draftId: string,
@@ -767,8 +821,8 @@ export const useDataStore = () => {
         internal_sources = data.sources || [];
         internal_measures = data.measures || [];
         internal_canvas = data.canvas || [];
-        internal_published = data.published || [];
-        internal_system = data.system || INITIAL_DASHBOARDS_MAP;
+        internal_published = data.publishedDashboards || data.published || [];
+        internal_system = data.systemDashboards || data.system || INITIAL_DASHBOARDS_MAP;
 
         persist("atr_dev_sources", internal_sources);
         persist("atr_dev_measures", internal_measures);
@@ -824,5 +878,9 @@ export const useDataStore = () => {
         }
       }
     },
+
+    // ── QA Telemetry ──────────────────────────────────────────────────────────
+    diagData,
+    setDiagData,
   };
 };

@@ -3,13 +3,23 @@ import { useAuth } from './AuthContext';
 import { useDataStore } from '../hooks/useDataStore';
 
 interface DevContextType {
-  viewMode: 'landing' | 'main' | 'basico' | 'edit_selection' | 'draft_selection';
-  setViewMode: (mode: any) => void;
+  viewMode: 'landing' | 'main' | 'basico' | 'edit_selection' | 'draft_selection' | 'canvas_setup';
+  setViewMode: (mode: 'landing' | 'main' | 'basico' | 'edit_selection' | 'draft_selection' | 'canvas_setup') => void;
   workspaceMode: 'graphic' | 'code' | 'relations';
   setWorkspaceMode: (mode: any) => void;
   dark: boolean;
   setDark: (dark: boolean | ((prev: boolean) => boolean)) => void;
   toggleTheme: () => void;
+  theme: {
+    bg: string;
+    surface: string;
+    border: string;
+    text: string;
+    muted: string;
+    input: string;
+    hover: string;
+    code: string;
+  };
   
   // Tabs & Query State
   tabs: any[];
@@ -40,7 +50,7 @@ export function DevProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const { dataSources, devMeasures, devCanvas } = useDataStore() as any;
 
-  const [viewMode, setViewMode] = useState<'landing'|'main'|'basico'|'edit_selection'|'draft_selection'>('landing');
+  const [viewMode, setViewMode] = useState<'landing'|'main'|'basico'|'edit_selection'|'draft_selection'|'canvas_setup'>('landing');
   const [workspaceMode, setWorkspaceMode] = useState<'graphic'|'code'|'relations'>('graphic');
   const [dark, setDark] = useState(() => localStorage.getItem("dev_theme") !== "light");
   const [showDashboard, setShowDashboard] = useState(false);
@@ -49,6 +59,17 @@ export function DevProvider({ children }: { children: React.ReactNode }) {
   const [tabs, setTabs] = useState<any[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [trackedTables, setTrackedTables] = useState<any[]>([]);
+
+  const theme = {
+    bg: dark ? "bg-[#0d1117]" : "bg-slate-100",
+    surface: dark ? "bg-[#161b22]" : "bg-white",
+    border: dark ? "border-slate-800" : "border-slate-200",
+    text: dark ? "text-slate-200" : "text-slate-900",
+    muted: dark ? "text-slate-400" : "text-slate-500",
+    input: dark ? "bg-slate-800 border-slate-600 text-white placeholder-slate-500" : "bg-white border-slate-300 text-slate-900 placeholder-slate-400",
+    hover: dark ? "hover:bg-slate-800/60" : "hover:bg-slate-100",
+    code: dark ? "bg-[#0d1117]" : "bg-slate-50",
+  };
 
   const toggleTheme = () => {
     setDark(d => {
@@ -66,7 +87,7 @@ export function DevProvider({ children }: { children: React.ReactNode }) {
     <DevContext.Provider value={{
       viewMode, setViewMode,
       workspaceMode, setWorkspaceMode,
-      dark, setDark, toggleTheme,
+      dark, setDark, toggleTheme, theme,
       tabs, setTabs,
       activeTabId, setActiveTabId,
       patchTab,

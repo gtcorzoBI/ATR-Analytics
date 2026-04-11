@@ -15,6 +15,9 @@ interface SavedComponent {
   columns: string[];
   query?: string;
   connectionId?: string;
+  versionId?: string;
+  executionJSON?: string;
+  visualType?: string;
 }
 
 interface DashItem extends SavedComponent {
@@ -36,6 +39,16 @@ interface DashboardBuilderProps {
 export default function DashboardBuilder({ components, connections, dark, onClose, onEdit }: DashboardBuilderProps) {
   const { user } = useAuth();
   const { publishDashboard } = useDataStore();
+
+  const getEnv = (key: string, fallback: string) => {
+    try {
+      return (import.meta as any).env[key] || fallback;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const API_BASE = getEnv("VITE_API_URL", "http://localhost:3001");
   const bg = dark ? "#06090f" : "#f1f5f9";
   const surface = dark ? "#161b22" : "#fff";
   const border = dark ? "#1e293b" : "#e2e8f0";
@@ -216,8 +229,9 @@ export default function DashboardBuilder({ components, connections, dark, onClos
               username: connDetails.username,
               password: connDetails.password
             } : null,
-            rows: [], 
-            columns: it.columns || [], 
+            rows: original?.rows || it.rows || [], // PERSIST SNAPSHOT
+            columns: it.columns || original?.columns || [], 
+            sourceType: (original as any)?.sourceType || 'SQL',
             x: it.x, y: it.y, w: it.w, h: it.h 
           };
         }),
@@ -231,9 +245,8 @@ export default function DashboardBuilder({ components, connections, dark, onClos
       publishDashboard(dashboard);
 
       // 2. Direct Harvest (Autonomous Delivery)
-      // Register components in Marketplace immediately with status='pending'
       try {
-        await fetch('http://localhost:3001/api/marketplace/harvest', {
+        await fetch(`${API_BASE}/api/marketplace/harvest`, {
           method: 'POST',
           headers: { ...authHeader, 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -244,9 +257,10 @@ export default function DashboardBuilder({ components, connections, dark, onClos
               name: c.name,
               config: { code: c.code },
               execution: {
-                engine: 'SQL_SERVER_DIRECT',
+                engine: c.sourceType === 'FILE' ? 'STATIC_SNAPSHOT' : 'SQL_SERVER_DIRECT',
                 rawQuery: c.query,
-                dataSourceId: c.connectionId
+                dataSourceId: c.connectionId,
+                snapshot: c.sourceType === 'FILE' ? c.rows : null // EMBED DATA
               },
               connection: c.connection
             }))

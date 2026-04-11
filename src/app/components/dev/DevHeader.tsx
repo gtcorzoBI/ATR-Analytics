@@ -1,16 +1,26 @@
 import React from 'react';
-import { ChevronLeft, BarChart3, LayoutDashboard, Code2, Database, Sun, Moon, LogOut } from 'lucide-react';
+import { ChevronLeft, BarChart3, LayoutDashboard, Code2, Database, Sun, Moon, LogOut, Plus, Trash2, X, AlertCircle } from 'lucide-react';
 import { useDev } from '../../context/DevContext';
 import { useAuth } from '../../context/AuthContext';
+import { useDataStore } from '../../hooks/useDataStore';
 
 export default function DevHeader() {
   const { 
     viewMode, setViewMode, workspaceMode, setWorkspaceMode, 
     dark, toggleTheme, theme 
   } = useDev() as any;
-  const { user, logout } = useAuth();
+  const { user, logout, resetCanvas } = useAuth() as any; // Note: resetCanvas might be in useDataStore, but checking useDev context first
+  const { resetCanvas: clearCanvas } = useDataStore() as any;
+  
+  const [showConfirm, setShowConfirm] = React.useState(false);
 
   if (viewMode === 'landing') return null;
+
+  const handleReset = async () => {
+    await clearCanvas();
+    setShowConfirm(false);
+    setViewMode('main');
+  };
 
   return (
     <header className={`h-11 ${theme.surface} ${theme.border} border-b flex items-center justify-between px-4 shrink-0 z-30`}>
@@ -47,7 +57,46 @@ export default function DevHeader() {
             <Database className="w-3.5 h-3.5" /> Relaciones
           </button>
         </div>
+
+        <button 
+          onClick={() => setShowConfirm(true)}
+          className={`flex items-center gap-1.5 px-3 py-1 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500 hover:text-white rounded-lg border border-indigo-500/20 text-[10px] font-black uppercase tracking-widest transition-all ml-2`}
+        >
+          <Plus className="w-3.5 h-3.5" /> Nuevo
+        </button>
       </div>
+
+      {showConfirm && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className={`w-full max-w-sm ${theme.surface} ${theme.border} border rounded-[32px] p-8 shadow-2xl animate-in zoom-in-95 duration-200`}>
+            <div className="flex flex-col items-center text-center space-y-4">
+              <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center text-red-500">
+                <AlertCircle className="w-8 h-8" />
+              </div>
+              <div className="space-y-2">
+                <h3 className={`text-xl font-black ${theme.text}`}>¿Limpiar el lienzo?</h3>
+                <p className={`text-xs ${theme.muted} leading-relaxed`}>
+                  Está a punto de borrar el lienzo actual. Todos los cambios no guardados se perderán. ¿Desea continuar?
+                </p>
+              </div>
+              <div className="w-full flex gap-3 pt-4">
+                <button 
+                  onClick={() => setShowConfirm(false)}
+                  className={`flex-1 py-3 text-xs font-black uppercase tracking-widest ${theme.muted} hover:bg-white/5 rounded-xl transition`}
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={handleReset}
+                  className="flex-1 py-3 bg-red-600 hover:bg-red-500 text-white text-xs font-black uppercase tracking-widest rounded-xl transition shadow-lg shadow-red-500/20"
+                >
+                  Confirmar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2 pr-4 border-r ${theme.border}">

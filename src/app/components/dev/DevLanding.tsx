@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Plus, LayoutDashboard, LayoutPanelTop, Search, Layers, Box, ChevronRight, PenSquare, X, AlertCircle } from 'lucide-react';
+import { Plus, LayoutDashboard, LayoutPanelTop, Search, Layers, Box, ChevronRight, PenSquare, X, AlertCircle, RefreshCw } from 'lucide-react';
 import { useDev } from '../../context/DevContext';
 import { useDataStore, INITIAL_AREAS, AREA_NAMES } from '../../hooks/useDataStore';
 
@@ -11,7 +11,7 @@ export default function DevLanding() {
 
   const startCreate = async () => {
     await resetCanvas();
-    setViewMode('main');
+    setViewMode('canvas_setup');
   };
 
   if (securityGate.isOpen) {
@@ -38,86 +38,100 @@ export default function DevLanding() {
     setViewMode('main');
   };
 
+  const modules = [
+    { 
+      id: 'nuevo', 
+      title: 'Nuevo Lienzo', 
+      desc: 'Inicia un proyecto desde cero conectando fuentes de datos.', 
+      icon: Plus, 
+      color: 'bg-indigo-500', 
+      action: startCreate 
+    },
+    { 
+      id: 'editar', 
+      title: 'Editar Lienzo', 
+      desc: 'Modifica y rehidrata dashboards publicados en el marketplace.', 
+      icon: LayoutDashboard, 
+      color: 'bg-orange-500', 
+      action: () => setViewMode('edit_selection') 
+    },
+    { 
+      id: 'graficos', 
+      title: 'Crear Gráficos', 
+      desc: 'Construye visualizaciones atómicas con JSX Engine.', 
+      icon: Box, 
+      color: 'bg-pink-500', 
+      action: () => { setViewMode('main'); } // Will add logic to set mode to 'code'
+    },
+    { 
+      id: 'borradores', 
+      title: 'Borradores', 
+      desc: 'Continua trabajando en tus proyectos guardados localmente.', 
+      icon: Layers, 
+      color: 'bg-emerald-500', 
+      action: () => setViewMode('draft_selection') 
+    }
+  ];
+
   return (
-    <main className="flex-1 overflow-y-auto p-8 lg:p-16">
-      <div className="max-w-6xl mx-auto space-y-20">
+    <main className="flex-1 overflow-y-auto p-8 lg:p-16 bg-gradient-to-br from-transparent to-indigo-500/5">
+      <div className="max-w-6xl mx-auto space-y-16">
         {/* Welcome Section */}
-        <div className="flex flex-col lg:flex-row items-center justify-between gap-12">
-          <div className="space-y-6 max-w-xl">
-            <div className="inline-flex items-center gap-2 px-3 py-1 bg-indigo-500/10 text-indigo-400 rounded-full border border-indigo-500/20 text-[10px] font-black uppercase tracking-widest">
-              Laboratorio de Datos v6
+        <div className="space-y-4 text-center lg:text-left">
+          <div className="inline-flex items-center gap-2 px-3 py-1 bg-indigo-500/10 text-indigo-400 rounded-full border border-indigo-500/20 text-[10px] font-black uppercase tracking-widest">
+            DataCanvas O.S. v1.0
+          </div>
+          <h1 className={`text-4xl lg:text-6xl font-black tracking-tighter leading-tight ${dark ? 'text-white' : 'text-slate-900'}`}>
+            Bienvenido al <span className="text-indigo-500 italic">Laboratorio DEV.</span>
+          </h1>
+          <p className={`text-lg ${theme.muted} max-w-2xl mx-auto lg:mx-0 font-medium`}>
+            Tu centro de mando para la creación de BI autónomo. Selecciona un módulo para comenzar.
+          </p>
+        </div>
+
+        {/* Modules Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          {modules.map((m) => (
+            <button
+              key={m.id}
+              onClick={m.action}
+              className={`group flex flex-col p-8 rounded-[32px] border ${theme.border} ${theme.surface} text-left transition-all hover:border-indigo-500 hover:shadow-2xl hover:shadow-indigo-500/10 hover:-translate-y-2 active:scale-95`}
+            >
+              <div className={`w-14 h-14 rounded-2xl ${m.color} flex items-center justify-center text-white mb-6 shadow-lg shadow-${m.color.split('-')[1]}-500/30 group-hover:scale-110 transition-transform duration-300`}>
+                <m.icon className="w-7 h-7" />
+              </div>
+              <h3 className="text-xl font-black mb-2">{m.title}</h3>
+              <p className={`text-xs ${theme.muted} leading-relaxed font-medium mb-8`}>{m.desc}</p>
+              <div className="mt-auto flex items-center gap-2 text-indigo-400 text-[10px] font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity">
+                Acceder <ChevronRight className="w-3 h-3" />
+              </div>
+            </button>
+          ))}
+        </div>
+
+        {/* Quick View Dashboard/State */}
+        <div className={`p-10 rounded-[40px] border ${theme.border} ${theme.surface} relative overflow-hidden bg-gradient-to-r from-transparent to-indigo-500/5`}>
+          <div className="relative z-10 flex flex-col lg:flex-row items-center justify-between gap-8">
+            <div className="space-y-4 text-center lg:text-left">
+               <h3 className="text-2xl font-black tracking-tight">Estado de Activos</h3>
+               <p className={`text-sm ${theme.muted} font-medium`}>Monitoreo en tiempo real de tus publicaciones en el marketplace interno.</p>
             </div>
-            <h1 className={`text-5xl lg:text-7xl font-black tracking-tighter leading-[0.9] ${dark ? 'text-white' : 'text-slate-900'}`}>
-              Desarrolla <br/> Componentes <br/> <span className="text-indigo-500 italic">Autónomos.</span>
-            </h1>
-            <p className={`text-lg ${theme.muted} leading-relaxed font-medium`}>
-              DataCanvas O.S. es el primer motor de análisis que permite inyectar SQL y JSX directamente en el Marketplace.
-            </p>
-            <div className="flex flex-wrap gap-4 pt-4">
-              <button 
-                onClick={startCreate}
-                className="group relative px-8 py-4 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl font-black text-sm uppercase tracking-widest transition-all shadow-2xl shadow-indigo-500/30 overflow-hidden active:scale-95"
-              >
-                <span className="relative z-10 flex items-center gap-2">
-                  <Plus className="w-5 h-5 group-hover:rotate-90 transition-transform duration-300" /> Nuevo Proyecto
-                </span>
-                <div className="absolute inset-0 bg-gradient-to-r from-indigo-400 to-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity" />
-              </button>
-              
-              {hasSnapshot && (
-                <button 
-                  onClick={recoverSnapshot}
-                  className="group relative px-8 py-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-2xl font-black text-sm uppercase tracking-widest transition-all shadow-2xl shadow-emerald-500/30 overflow-hidden active:scale-95 animate-bounce-subtle"
-                >
-                   <span className="relative z-10 flex items-center gap-2">
-                    <PenSquare className="w-5 h-5" /> Continuar Borrador
-                  </span>
-                </button>
-              )}
-              
-              <button 
-                onClick={() => setViewMode('edit_selection')}
-                className={`px-8 py-4 ${theme.surface} border-2 ${theme.border} ${theme.text} hover:border-indigo-500 rounded-2xl font-black text-sm uppercase tracking-widest transition-all active:scale-95`}
-              >
-                Editar Dashboard
-              </button>
+            
+            <div className="flex flex-wrap justify-center gap-6">
+              {[
+                { label: 'Dashboards', val: drafts?.length || 0, icon: LayoutDashboard },
+                { label: 'Componentes', val: '0', icon: Box },
+                { label: 'Versiones', val: '1.0', icon: RefreshCw }
+              ].map(s => (
+                <div key={s.label} className="flex flex-col items-center gap-1">
+                   <div className="text-3xl font-black text-indigo-500">{s.val}</div>
+                   <div className={`text-[9px] font-black uppercase tracking-wider ${theme.muted}`}>{s.label}</div>
+                </div>
+              ))}
             </div>
           </div>
           
-          {/* Stats / Quick Box */}
-          <div className="grid grid-cols-2 gap-4 w-full lg:w-auto">
-            {[
-              { label: 'Borradores', val: drafts?.length || 0, icon: Layers, color: 'text-emerald-500' },
-              { label: 'Componentes', val: '0', icon: Box, color: 'text-pink-500' }, // Needs count from store
-              { label: 'Conexiones', val: '0', icon: Search, color: 'text-indigo-500' },
-              { label: 'Marketplace', val: '0', icon: LayoutPanelTop, color: 'text-orange-500' }
-            ].map(s => (
-              <div key={s.label} className={`p-6 rounded-3xl border ${theme.border} ${theme.surface} space-y-2 group hover:border-indigo-500 transition-all`}>
-                <s.icon className={`w-6 h-6 ${s.color} transition-transform group-hover:scale-110`} />
-                <div className="text-2xl font-black">{s.val}</div>
-                <div className={`text-[10px] font-bold uppercase tracking-widest ${theme.muted}`}>{s.label}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Existing Drafts */}
-        <div className="space-y-6">
-          <div className="flex items-center justify-between">
-            <h3 className="text-xl font-black uppercase tracking-tight flex items-center gap-2">
-              <Layers className="w-5 h-5 text-indigo-400" /> Continuar Trabajo
-            </h3>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-             {drafts.length === 0 && <p className="text-sm opacity-40 italic">No tienes borradores pendientes.</p>}
-             {drafts.map((draft: any) => (
-                <div key={draft.id} className={`group ${theme.surface} border ${theme.border} rounded-2xl p-6 hover:border-indigo-500 transition-all cursor-pointer`}>
-                    <h4 className="font-bold text-lg mb-1">{draft.name}</h4>
-                    <p className="text-xs opacity-50 mb-4">Último cambio: {new Date(draft.updatedAt).toLocaleDateString()}</p>
-                    <button onClick={() => setViewMode('main')} className="w-full py-2 bg-indigo-500/10 text-indigo-500 rounded-lg text-xs font-bold uppercase tracking-widest hover:bg-indigo-500 hover:text-white transition">Abrir Borrador</button>
-                </div>
-             ))}
-          </div>
+          <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/5 blur-[120px] rounded-full -mr-32 -mt-32" />
         </div>
       </div>
     </main>
