@@ -237,15 +237,19 @@ app.get('/api/dev/tables/:connectionId', requireToken, async (req, res) => {
        console.log(`📊 QA Telemetry: [User: ${diag.currentUser}] [DB: ${diag.currentDB}]`);
 
        const result = await entry.pool.request().query(`
-         SELECT TABLE_NAME = s.name + '.' + t.name FROM sys.tables t INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
-         UNION ALL
-         SELECT TABLE_NAME = s.name + '.' + v.name FROM sys.views v INNER JOIN sys.schemas s ON v.schema_id = s.schema_id
+         SELECT TABLE_SCHEMA + '.' + TABLE_NAME AS TABLE_NAME
+         FROM INFORMATION_SCHEMA.TABLES
+         WHERE TABLE_TYPE IN ('BASE TABLE', 'VIEW')
          ORDER BY TABLE_NAME
        `);
        tables = result.recordset.map(r => r.TABLE_NAME);
     }
+    console.log(`✅ Tablas obtenidas para conexión ${connectionId}. Count: ${tables.length}`);
     res.json({ success: true, tables, diag });
-  } catch (err) { res.status(500).json({ error: err.message, diag }); }
+  } catch (err) {
+    console.error(`❌ Error al obtener tablas para conexión ${connectionId}:`, err.message);
+    res.status(500).json({ error: err.message, diag });
+  }
 });
 
 app.post('/api/dev/sources', requireToken, async (req, res) => {
@@ -259,8 +263,12 @@ app.post('/api/dev/sources', requireToken, async (req, res) => {
           INSERT INTO Marketplace_DataSources (id, name, host, databaseName, username, password, owner, type, provider, configJSON) 
           VALUES (@id, @name, @host, @db, @user, @pass, @owner, @type, @provider, @config)
     `);
+    console.log(`✅ Conexión creada/actualizada exitosamente. Connection ID: ${id}`);
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    console.error(`❌ Error al guardar conexión ${id}:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/dev/columns/:connectionId', requireToken, async (req, res) => {
