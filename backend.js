@@ -221,6 +221,11 @@ app.get('/api/dev/tables/:connectionId', requireToken, async (req, res) => {
          console.log(`📡 QA Context Forced: USE [${ds.databaseName}]`);
       }
       poolMap.set(poolKey, { pool: p, lastUsed: Date.now() });
+      console.log(`🔄 Nueva conexión agregada al poolMap. Key: ${poolKey}`);
+    } else {
+      console.log(`⚡ Reusando conexión existente del poolMap. Key: ${poolKey}`);
+      // Actualizar lastUsed para mantener viva la conexión
+      poolMap.get(poolKey).lastUsed = Date.now();
     }
     const entry = poolMap.get(poolKey);
     let tables = [];
@@ -236,13 +241,32 @@ app.get('/api/dev/tables/:connectionId', requireToken, async (req, res) => {
        diag.serverVersion = qResult.recordset[0].ver;
        console.log(`📊 QA Telemetry: [User: ${diag.currentUser}] [DB: ${diag.currentDB}]`);
 
-       const result = await entry.pool.request().query(`
+       const query = `
          SELECT TABLE_SCHEMA + '.' + TABLE_NAME AS TABLE_NAME
          FROM INFORMATION_SCHEMA.TABLES
          WHERE TABLE_TYPE IN ('BASE TABLE', 'VIEW')
          ORDER BY TABLE_NAME
-       `);
+       `;
+       console.log(`🔍 Ejecutando query de descubrimiento de tablas para SQL Server: \n${query.trim()}`);
+       const result = await entry.pool.request().query(query);
        tables = result.recordset.map(r => r.TABLE_NAME);
+
+       if (tables.length === 0) {
+           console.warn(`⚠️ No se encontraron tablas para conexión ${connectionId}. Verificando permisos del usuario...`);
+           try {
+               const permResult = await entry.pool.request().query(`SELECT * FROM fn_my_permissions(NULL, 'DATABASE')`);
+               const perms = permResult.recordset.map(p => p.permission_name).join(', ');
+               console.warn(`🔑 Permisos actuales de la base de datos para ${diag.currentUser}: [${perms}]`);
+               return res.status(403).json({
+                   success: false,
+                   tables: [],
+                   error: `La consulta retornó 0 tablas. Permisos actuales en la BD: ${perms || 'Ninguno detectado'}`,
+                   diag
+               });
+           } catch (permErr) {
+               console.error(`❌ Error al consultar permisos:`, permErr.message);
+           }
+       }
     }
     console.log(`✅ Tablas obtenidas para conexión ${connectionId}. Count: ${tables.length}`);
     res.json({ success: true, tables, diag });
