@@ -20,6 +20,11 @@ interface MarketplaceState {
   injectWidget: (widget: MarketplaceWidget) => void;
   removeInstance: (instanceId: string) => void;
   updateInstanceProps: (instanceId: string, props: any) => void;
+  
+  // NEW: Favorites & CRUD
+  toggleFavorite: (widgetId: string) => Promise<void>;
+  deleteWidget: (widgetId: string) => Promise<void>;
+  updateWidget: (widgetId: string, data: { name: string, description: string }) => Promise<void>;
 }
 
 export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
@@ -50,6 +55,53 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
 
   setSearch: (q) => set({ searchQuery: q }),
   setCategory: (cat) => set({ selectedCategory: cat }),
+
+  // NEW: Favorites Logic
+  toggleFavorite: async (widgetId) => {
+    const token = localStorage.getItem("atr_token");
+    try {
+      const res = await fetch(`${API}/api/marketplace/favorites/toggle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ widgetId })
+      });
+      const data = await res.json();
+      if (data.success) {
+        set(state => ({
+          widgets: state.widgets.map(w => w.id === widgetId ? { ...w, isFavorite: data.isFavorite } : w)
+        }));
+      }
+    } catch (e) { console.error("Toggle Favorite failed", e); }
+  },
+
+  deleteWidget: async (widgetId) => {
+    const token = localStorage.getItem("atr_token");
+    try {
+      const res = await fetch(`${API}/api/marketplace/widgets/${widgetId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        set(state => ({ widgets: state.widgets.filter(w => w.id !== widgetId) }));
+      }
+    } catch (e) { console.error("Delete failed", e); }
+  },
+
+  updateWidget: async (widgetId, payload) => {
+    const token = localStorage.getItem("atr_token");
+    try {
+      const res = await fetch(`${API}/api/marketplace/widgets/${widgetId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        set(state => ({
+          widgets: state.widgets.map(w => w.id === widgetId ? { ...w, ...payload } : w)
+        }));
+      }
+    } catch (e) { console.error("Update failed", e); }
+  },
 
   injectWidget: (widget) => {
     const newInstance: DashboardWidgetInstance = {
