@@ -18,7 +18,9 @@ export default function InjectedWidget({ instanceId, widget, dark }: InjectedWid
       return widget.executionJSON;
     }
     try {
-      return JSON.parse(widget.executionJSON || '{}');
+      const parsed = JSON.parse(widget.executionJSON || '{}');
+      console.log(`[InjectedWidget] ${widget.name || 'Component'} execution recipe:`, parsed);
+      return parsed;
     } catch (e) {
       console.error("[InjectedWidget] Failed to parse executionJSON", e);
       return {};
@@ -27,30 +29,32 @@ export default function InjectedWidget({ instanceId, widget, dark }: InjectedWid
 
   const config = useMemo(() => {
     try {
+      if (typeof widget.configJSON === 'object' && widget.configJSON !== null) return widget.configJSON;
       return JSON.parse(widget.configJSON || '{}');
-    } catch {
-      return {};
-    }
+    } catch { return {}; }
   }, [widget.configJSON]);
+
+  const { dataSourceId, rawQuery } = execution || {};
 
   // Initial data fetch
   useEffect(() => {
-    if (!execution.dataSourceId || !execution.rawQuery) {
+    if (!dataSourceId || !rawQuery) {
       console.warn(`[InjectedWidget] ${widget.name || 'Auto-Widget'} - Missing execution metadata:`, {
-        ds: !!execution.dataSourceId,
-        query: !!execution.rawQuery
+        ds: !!dataSourceId,
+        query: !!rawQuery,
+        executionRaw: widget.executionJSON
       });
       return;
     }
 
     if (!dataCache[instanceId] && !loadingStates[instanceId]) {
       executeQuery(instanceId, {
-        dataSourceId: execution.dataSourceId,
-        queryTemplate: execution.rawQuery,
+        dataSourceId: dataSourceId,
+        queryTemplate: rawQuery,
         versionId: widget.versionId
       });
     }
-  }, [instanceId, execution.dataSourceId, execution.rawQuery, widget.versionId, executeQuery, dataCache, loadingStates, widget.name]);
+  }, [instanceId, dataSourceId, rawQuery, widget.versionId, executeQuery, dataCache, loadingStates, widget.name, widget.executionJSON]);
 
   const result = dataCache[instanceId];
   const isLoading = loadingStates[instanceId];
@@ -101,15 +105,22 @@ export default function InjectedWidget({ instanceId, widget, dark }: InjectedWid
   `;
 
   return (
-    <LiveWidget 
-      instanceId={instanceId}
-      code={code}
-      rows={result?.rows || []}
-      columns={result?.columns || []}
-      query={execution.rawQuery}
-      connectionId={execution.dataSourceId}
-      dark={dark}
-      padding={20}
-    />
+    <div className={`relative w-full h-full rounded-2xl transition-all duration-300 ${widget.isJSX ? 'border-2 border-orange-500/40 shadow-[0_0_15px_rgba(249,115,22,0.15)]' : ''}`}>
+      {widget.isJSX && (
+        <div className="absolute -top-2 -right-2 bg-orange-600 text-white text-[8px] font-black px-2 py-0.5 rounded-full uppercase tracking-widest animate-pulse z-20 shadow-lg shadow-orange-500/40">
+          JSX Custom
+        </div>
+      )}
+      <LiveWidget 
+        instanceId={instanceId}
+        code={code}
+        rows={result?.rows || []}
+        columns={result?.columns || []}
+        query={execution.rawQuery}
+        connectionId={execution.dataSourceId}
+        dark={dark}
+        padding={20}
+      />
+    </div>
   );
 }
