@@ -196,6 +196,7 @@ app.post('/api/dev/test-connection', requireToken, async (req, res) => {
 
 app.get('/api/dev/tables/:connectionId', requireToken, async (req, res) => {
   const { connectionId } = req.params;
+  const startTime = Date.now();
   const diag = { currentUser: 'unknown', currentDB: 'unknown', serverVersion: 'unknown' };
   try {
     const poolSys = await ensureSysConnection();
@@ -210,6 +211,17 @@ app.get('/api/dev/tables/:connectionId', requireToken, async (req, res) => {
     if (!ds) return res.status(404).json({ error: `Conexión no encontrada.` });
 
     const poolKey = `${ds.host}|${ds.databaseName}|${ds.username}`;
+    if (poolMap.has(poolKey)) {
+      const existingEntry = poolMap.get(poolKey);
+      const isSqlClosed = ds.provider !== 'mysql' && !existingEntry.pool.connected;
+      const isMysqlClosed = (ds.type === 'mysql' || ds.provider === 'mysql') && existingEntry.pool._closed;
+      
+      if (isSqlClosed || isMysqlClosed) {
+        console.log(`⚠️ Conexión en poolMap estaba cerrada. Recreando Key: ${poolKey}`);
+        poolMap.delete(poolKey);
+      }
+    }
+
     if (!poolMap.has(poolKey)) {
       const config = getSQLConfig({ host: ds.host, username: ds.username, password: ds.password, database: ds.databaseName });
       const p = new sql.ConnectionPool(config);
@@ -221,34 +233,87 @@ app.get('/api/dev/tables/:connectionId', requireToken, async (req, res) => {
          console.log(`📡 QA Context Forced: USE [${ds.databaseName}]`);
       }
       poolMap.set(poolKey, { pool: p, lastUsed: Date.now() });
+      console.log(`🔄 Nueva conexión agregada al poolMap. Key: ${poolKey}`);
+    } else {
+      console.log(`⚡ Reusando conexión activa existente del poolMap. Key: ${poolKey}`);
+      // Actualizar lastUsed para mantener viva la conexión
+      poolMap.get(poolKey).lastUsed = Date.now();
     }
     const entry = poolMap.get(poolKey);
     let tables = [];
     
     if (ds.type === 'mysql' || ds.provider === 'mysql') {
-       const [rows] = await entry.pool.query("SHOW TABLES");
-       tables = rows.map(r => Object.values(r)[0]);
+       const [rows] = await entry.pool.query("SHOW FULL TABLES");
+       tables = rows.map(r => {
+         const vals = Object.values(r);
+         return { name: vals[0], type: vals[1] === 'VIEW' ? 'VIEW' : 'TABLE' };
+       });
     } else {
        // QA Diagnostic Run
-       const qResult = await entry.pool.request().query("SELECT SUSER_SNAME() as [user], DB_NAME() as [db], @@VERSION as [ver]");
+       const qResult = await entry.pool.request().query(`
+          SELECT 
+            [user] = SUSER_SNAME(), 
+            [db] = DB_NAME(), 
+            [ver] = @@VERSION,
+            [access] = HAS_DBACCESS(DB_NAME())
+       `);
        diag.currentUser = qResult.recordset[0].user;
        diag.currentDB = qResult.recordset[0].db;
        diag.serverVersion = qResult.recordset[0].ver;
-       console.log(`📊 QA Telemetry: [User: ${diag.currentUser}] [DB: ${diag.currentDB}]`);
+       diag.hasAccess = qResult.recordset[0].access;
+       console.log(`📊 QA Telemetry: [User: ${diag.currentUser}] [DB: ${diag.currentDB}] [Access: ${diag.hasAccess}]`);
 
-       const result = await entry.pool.request().query(`
-         SELECT TABLE_SCHEMA + '.' + TABLE_NAME AS TABLE_NAME
-         FROM INFORMATION_SCHEMA.TABLES
-         WHERE TABLE_TYPE IN ('BASE TABLE', 'VIEW')
+       const query = `
+         SELECT 
+             TABLE_NAME = s.name + '.' + t.name,
+             TABLE_TYPE = 'TABLE'
+         FROM sys.tables t
+         INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+         UNION ALL
+         SELECT 
+             TABLE_NAME = s.name + '.' + v.name,
+             TABLE_TYPE = 'VIEW'
+         FROM sys.views v
+         INNER JOIN sys.schemas s ON v.schema_id = s.schema_id
          ORDER BY TABLE_NAME
-       `);
-       tables = result.recordset.map(r => r.TABLE_NAME);
+       `;
+       console.log(`🔍 Ejecutando Inquisidor SQL (Deep Scan): \n${query.trim()}`);
+       const result = await entry.pool.request().query(query);
+       tables = result.recordset.map(r => ({ 
+           name: r.TABLE_NAME, 
+           type: r.TABLE_TYPE === 'VIEW' ? 'VIEW' : 'TABLE' 
+       }));
+       
+       if (tables.length === 0) {
+           console.warn(`⚠️ No se encontraron tablas para conexión ${connectionId}. Verificando permisos del usuario...`);
+           try {
+               const permResult = await entry.pool.request().query(`SELECT * FROM fn_my_permissions(NULL, 'DATABASE')`);
+               const perms = permResult.recordset.map(p => p.permission_name);
+               console.warn(`🔑 Permisos actuales de la base de datos para ${diag.currentUser}: [${perms.join(', ')}]`);
+               
+               const hasReadAccess = perms.includes('SELECT') || perms.includes('VIEW DEFINITION') || perms.includes('CONTROL');
+               if (!hasReadAccess) {
+                   return res.status(403).json({ 
+                       success: false, 
+                       tables: [], 
+                       count: 0,
+                       executionTime: Date.now() - startTime,
+                       error: `La consulta retornó 0 tablas por falta de permisos. Permisos actuales en la BD: ${perms.join(', ') || 'Ninguno detectado'}`, 
+                       diag 
+                   });
+               } else {
+                   console.log(`✅ Permisos suficientes detectados. La base de datos parece no tener tablas.`);
+               }
+           } catch (permErr) {
+               console.error(`❌ Error al consultar permisos:`, permErr.message);
+           }
+       }
     }
     console.log(`✅ Tablas obtenidas para conexión ${connectionId}. Count: ${tables.length}`);
-    res.json({ success: true, tables, diag });
+    res.json({ success: true, tables, count: tables.length, executionTime: Date.now() - startTime, diag });
   } catch (err) {
     console.error(`❌ Error al obtener tablas para conexión ${connectionId}:`, err.message);
-    res.status(500).json({ error: err.message, diag });
+    res.status(500).json({ success: false, error: err.message, tables: [], count: 0, executionTime: Date.now() - startTime, diag });
   }
 });
 

@@ -43,26 +43,12 @@ function DevDashboardContent() {
     );
   }
 
-  if (viewMode === 'canvas_setup') {
-    return (
-        <div className={`flex flex-col h-screen ${theme.bg} ${theme.text} transition-colors duration-200`}>
-            <DevHeader />
-            <DataExplorer />
-        </div>
-    );
-  }
-
   return (
     <div className={`flex flex-col h-screen ${theme.bg} ${theme.text} font-sans overflow-hidden transition-colors duration-200`}>
-        <DevHeader />
-        
-        <div className="flex-1 flex overflow-hidden">
-            <DevSidebar />
-            <DevWorkspace />
-            <GraphBank />
-        </div>
+        {/* Renderizado Único: DataCanvas O.S. se encarga de su propio Header y Sidebars */}
+        <DevWorkspace />
 
-        {/* Modals shared by context */}
+        {/* Modals compartidos por contexto */}
         {showDashboard && (
             <DashboardBuilder
                 components={savedComponents}

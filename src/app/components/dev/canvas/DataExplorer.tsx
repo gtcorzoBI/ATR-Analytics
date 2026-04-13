@@ -249,7 +249,7 @@ export default function DataExplorer() {
     const connId = activeTab?.connectionId ?? "";
     const list = (SAFE_TABLES[connId] || []) as any[];
     return list.filter((t: any) => {
-      const name = typeof t === 'string' ? t : t.TABLE_NAME || "";
+      const name = typeof t === 'string' ? t : (t.name || t.TABLE_NAME || "");
       return name.toLowerCase().includes(tableSearch.toLowerCase());
     });
   }, [SAFE_TABLES, activeTab, tableSearch]);
@@ -389,7 +389,7 @@ export default function DataExplorer() {
   };
 
   const fetchTableData = async (tableData: any) => {
-    const tableName = typeof tableData === 'string' ? tableData : tableData.TABLE_NAME;
+    const tableName = typeof tableData === 'string' ? tableData : (tableData.name || tableData.TABLE_NAME);
     if (!activeTab?.connectionId) return;
 
     setSelectedTable(tableName);
@@ -781,14 +781,26 @@ export default function DataExplorer() {
           <div className={`p-4 border-b ${theme.border} bg-black/5 space-y-3`}>
              <div className="flex items-center justify-between px-1">
                 <span className="text-[9px] font-black uppercase tracking-widest opacity-40">Tablas y Vistas</span>
-                <button 
-                  onClick={() => activeTab?.connectionId && fetchTables(activeTab.connectionId)}
-                  disabled={loading || !activeTab?.connectionId}
-                  className="p-1.5 rounded-lg hover:bg-black/5 text-slate-500 hover:text-indigo-500 transition-colors disabled:opacity-30"
-                  title="Refrescar metadatos"
-                >
-                   <RotateCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
-                </button>
+                 <div className="flex items-center gap-1">
+                    <button 
+                      onClick={() => {
+                        setActiveTabId(null);
+                        setOnboardingStep('hub');
+                      }}
+                      className="p-1.5 rounded-lg hover:bg-black/5 text-indigo-500 hover:text-indigo-600 transition-colors"
+                      title="Nueva Conexión"
+                    >
+                       <Plus className="w-3.5 h-3.5" />
+                    </button>
+                    <button 
+                      onClick={() => activeTab?.connectionId && fetchTables(activeTab.connectionId)}
+                      disabled={loading || !activeTab?.connectionId}
+                      className="p-1.5 rounded-lg hover:bg-black/5 text-slate-500 hover:text-indigo-500 transition-colors disabled:opacity-30"
+                      title="Refrescar metadatos"
+                    >
+                       <RotateCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+                    </button>
+                 </div>
              </div>
              <div className={`flex items-center gap-2 px-3 py-2 rounded-2xl border ${theme.border} bg-white dark:bg-black/20 ring-4 ring-transparent focus-within:ring-indigo-500/10 transition-all`}>
                 <Search className="w-3.5 h-3.5 opacity-40 shrink-0" />
@@ -824,6 +836,12 @@ export default function DataExplorer() {
                          <div className="flex justify-between text-[8px] font-bold">
                             <span className="opacity-40 uppercase">DB</span>
                             <span className="text-emerald-400 uppercase">{diagData.currentDB}</span>
+                         </div>
+                         <div className="flex justify-between text-[8px] font-bold">
+                            <span className="opacity-40 uppercase">Access</span>
+                            <span className={`uppercase ${diagData.hasAccess === 1 ? 'text-emerald-500' : 'text-red-500'}`}>
+                               {diagData.hasAccess === 1 ? 'Autorizado' : 'Denegado'}
+                            </span>
                          </div>
                       </div>
                       <div className="h-px bg-white/5" />
@@ -861,21 +879,31 @@ export default function DataExplorer() {
               </button>
             )}
 
-            {filteredTables.map((t: string) => (
-              <button 
-                key={t}
-                onClick={() => fetchTableData(t)}
-                className={`w-full text-left px-5 py-3 text-[11px] font-bold flex items-center justify-between hover:bg-black/5 transition-all group ${selectedTable === t ? 'text-indigo-500 bg-indigo-500/5' : ''}`}
-              >
-                 <div className="flex items-center gap-3">
-                    <div className={`p-1.5 rounded-lg border ${theme.border} group-hover:bg-white transition ${selectedTable === t ? 'bg-white shadow-sm' : ''}`}>
-                       <Table2 className="w-3.5 h-3.5" />
+            {filteredTables.map((table: any) => {
+               const name = typeof table === 'string' ? table : (table.name || table.TABLE_NAME);
+               const isView = (table.type || table.TABLE_TYPE) === 'VIEW';
+               return (
+                  <button
+                    key={name}
+                    onClick={() => fetchTableData(table)}
+                    className={`w-full text-left px-5 py-3 text-[11px] font-bold flex items-center justify-between hover:bg-black/5 transition-all group ${selectedTable === name ? 'text-indigo-500 bg-indigo-500/5 border-r-2 border-indigo-500' : ''}`}
+                  >
+                    <div className="flex items-center gap-3">
+                        <div className={`p-1.5 rounded-lg border ${theme.border} group-hover:bg-white transition ${selectedTable === name ? 'bg-white shadow-sm' : ''}`}>
+                          {isView ? <Globe2 className="w-3.5 h-3.5" /> : <Table2 className="w-3.5 h-3.5" />}
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="truncate max-w-[140px] tracking-tight">{name}</span>
+                          <span className="text-[6px] font-black uppercase opacity-30">
+                            {isView ? 'SISTEMA / VISTA' : 'ENTIDAD / TABLA'}
+                          </span>
+                        </div>
                     </div>
-                    <span className="truncate max-w-[140px] tracking-tight">{t}</span>
-                 </div>
-                 {selectedTable === t && <ChevronRight className="w-3.5 h-3.5" />}
-              </button>
-            ))}
+                    {selectedTable === name && <ChevronRight className="w-3.5 h-3.5" />}
+                  </button>
+               );
+            })}
+
          </div>
          <div className={`h-12 border-b ${theme.border} bg-slate-500/5 flex items-center px-4 gap-3 shrink-0`}>
              <div className="w-5 h-5 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-500">
