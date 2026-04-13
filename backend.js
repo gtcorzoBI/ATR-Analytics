@@ -215,7 +215,7 @@ app.get('/api/dev/tables/:connectionId', requireToken, async (req, res) => {
       const existingEntry = poolMap.get(poolKey);
       const isSqlClosed = ds.provider !== 'mysql' && !existingEntry.pool.connected;
       const isMysqlClosed = (ds.type === 'mysql' || ds.provider === 'mysql') && existingEntry.pool._closed;
-      
+
       if (isSqlClosed || isMysqlClosed) {
         console.log(`⚠️ Conexión en poolMap estaba cerrada. Recreando Key: ${poolKey}`);
         poolMap.delete(poolKey);
@@ -264,42 +264,34 @@ app.get('/api/dev/tables/:connectionId', requireToken, async (req, res) => {
        console.log(`📊 QA Telemetry: [User: ${diag.currentUser}] [DB: ${diag.currentDB}] [Access: ${diag.hasAccess}]`);
 
        const query = `
-         SELECT 
-             TABLE_NAME = s.name + '.' + t.name,
-             TABLE_TYPE = 'TABLE'
-         FROM sys.tables t
-         INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
-         UNION ALL
-         SELECT 
-             TABLE_NAME = s.name + '.' + v.name,
-             TABLE_TYPE = 'VIEW'
-         FROM sys.views v
-         INNER JOIN sys.schemas s ON v.schema_id = s.schema_id
+         SELECT TABLE_SCHEMA + '.' + TABLE_NAME AS TABLE_NAME, TABLE_TYPE
+         FROM INFORMATION_SCHEMA.TABLES
+         WHERE TABLE_TYPE IN ('BASE TABLE', 'VIEW')
          ORDER BY TABLE_NAME
        `;
-       console.log(`🔍 Ejecutando Inquisidor SQL (Deep Scan): \n${query.trim()}`);
+       console.log(`🔍 Ejecutando query de descubrimiento de tablas para SQL Server: \n${query.trim()}`);
        const result = await entry.pool.request().query(query);
-       tables = result.recordset.map(r => ({ 
-           name: r.TABLE_NAME, 
-           type: r.TABLE_TYPE === 'VIEW' ? 'VIEW' : 'TABLE' 
+       tables = result.recordset.map(r => ({
+           name: r.TABLE_NAME,
+           type: r.TABLE_TYPE === 'VIEW' ? 'VIEW' : 'TABLE'
        }));
-       
+
        if (tables.length === 0) {
            console.warn(`⚠️ No se encontraron tablas para conexión ${connectionId}. Verificando permisos del usuario...`);
            try {
                const permResult = await entry.pool.request().query(`SELECT * FROM fn_my_permissions(NULL, 'DATABASE')`);
                const perms = permResult.recordset.map(p => p.permission_name);
                console.warn(`🔑 Permisos actuales de la base de datos para ${diag.currentUser}: [${perms.join(', ')}]`);
-               
+
                const hasReadAccess = perms.includes('SELECT') || perms.includes('VIEW DEFINITION') || perms.includes('CONTROL');
                if (!hasReadAccess) {
-                   return res.status(403).json({ 
-                       success: false, 
-                       tables: [], 
+                   return res.status(403).json({
+                       success: false,
+                       tables: [],
                        count: 0,
                        executionTime: Date.now() - startTime,
-                       error: `La consulta retornó 0 tablas por falta de permisos. Permisos actuales en la BD: ${perms.join(', ') || 'Ninguno detectado'}`, 
-                       diag 
+                       error: `La consulta retornó 0 tablas por falta de permisos. Permisos actuales en la BD: ${perms.join(', ') || 'Ninguno detectado'}`,
+                       diag
                    });
                } else {
                    console.log(`✅ Permisos suficientes detectados. La base de datos parece no tener tablas.`);
