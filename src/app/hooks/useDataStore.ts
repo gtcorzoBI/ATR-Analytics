@@ -230,11 +230,12 @@ const persistBackend = async (
   }
 };
 
+let internal_diag_data: any = null;
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 export const useDataStore = () => {
   const [, setTick] = useState(0);
   const forceUpdate = () => setTick((t) => t + 1);
-  const [diagData, setDiagData] = useState<any>(null);
 
   useEffect(() => {
     listeners.push(forceUpdate);
@@ -419,7 +420,9 @@ export const useDataStore = () => {
           headers: { Authorization: `Bearer ${token}` }
         });
         const data = await res.json();
-        if (data.diag) setDiagData(data.diag);
+        if (data.diag) {
+          internal_diag_data = data.diag;
+        }
         if (data.tables) {
           internal_tables_map = { ...internal_tables_map, [connectionId]: data.tables };
           notify();
@@ -880,7 +883,10 @@ export const useDataStore = () => {
     },
 
     // ── QA Telemetry ──────────────────────────────────────────────────────────
-    diagData,
-    setDiagData,
+    diagData: internal_diag_data,
+    setDiagData: (d: any) => {
+      internal_diag_data = d;
+      notify();
+    },
   };
 };

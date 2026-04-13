@@ -250,11 +250,18 @@ app.get('/api/dev/tables/:connectionId', requireToken, async (req, res) => {
        });
     } else {
        // QA Diagnostic Run
-       const qResult = await entry.pool.request().query("SELECT SUSER_SNAME() as [user], DB_NAME() as [db], @@VERSION as [ver]");
+       const qResult = await entry.pool.request().query(`
+          SELECT 
+            [user] = SUSER_SNAME(), 
+            [db] = DB_NAME(), 
+            [ver] = @@VERSION,
+            [access] = HAS_DBACCESS(DB_NAME())
+       `);
        diag.currentUser = qResult.recordset[0].user;
        diag.currentDB = qResult.recordset[0].db;
        diag.serverVersion = qResult.recordset[0].ver;
-       console.log(`📊 QA Telemetry: [User: ${diag.currentUser}] [DB: ${diag.currentDB}]`);
+       diag.hasAccess = qResult.recordset[0].access;
+       console.log(`📊 QA Telemetry: [User: ${diag.currentUser}] [DB: ${diag.currentDB}] [Access: ${diag.hasAccess}]`);
 
        const query = `
          SELECT TABLE_SCHEMA + '.' + TABLE_NAME AS TABLE_NAME, TABLE_TYPE

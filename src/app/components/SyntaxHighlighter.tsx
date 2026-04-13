@@ -52,14 +52,31 @@ export default function SyntaxHighlighter({ code, onChange, dark }: SyntaxHighli
   const bg = dark ? '#0d1117' : '#f8fafc';
   const text = dark ? '#e6edf3' : '#1e293b';
 
+  const sharedStyles: React.CSSProperties = {
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+    fontSize: '12px',
+    lineHeight: '1.6',
+    padding: '16px',
+    border: 'none',
+    margin: 0,
+    tabSize: 2,
+    whiteSpace: 'pre',
+    wordBreak: 'normal',
+    overflowWrap: 'normal',
+  };
+
   return (
-    <div className="relative w-full h-full overflow-hidden font-mono text-[12px] leading-relaxed" style={{ background: bg }}>
+    <div className="relative w-full h-full overflow-hidden" style={{ background: bg }}>
       {/* Background highlighted layer */}
       <pre 
         ref={preRef}
         aria-hidden="true"
-        className="absolute inset-0 m-0 p-4 overflow-hidden pointer-events-none whitespace-pre"
-        style={{ color: text }}
+        className="absolute inset-0 overflow-hidden pointer-events-none"
+        style={{ 
+          ...sharedStyles,
+          color: text,
+          zIndex: 1,
+        }}
         dangerouslySetInnerHTML={{ __html: highlightCode(code) || ' ' }}
       />
       {/* Foreground textarea for editing */}
@@ -70,8 +87,15 @@ export default function SyntaxHighlighter({ code, onChange, dark }: SyntaxHighli
         onScroll={handleScroll}
         onKeyDown={handleKeyDown}
         spellCheck="false"
-        className="absolute inset-0 w-full h-full p-4 m-0 resize-none bg-transparent whitespace-pre overflow-auto outline-none"
-        style={{ color: 'transparent', caretColor: text }}
+        autoFocus
+        className="absolute inset-0 w-full h-full resize-none bg-transparent overflow-auto outline-none transition-none"
+        style={{ 
+          ...sharedStyles,
+          color: 'transparent', 
+          caretColor: text,
+          zIndex: 2,
+          WebkitTextFillColor: 'transparent', // Extra insurance for some browsers
+        }}
       />
     </div>
   );

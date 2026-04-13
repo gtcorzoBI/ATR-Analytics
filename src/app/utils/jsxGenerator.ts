@@ -1,117 +1,78 @@
-export function generateJSX(visualId: string, mapping: any, columns: string[]): string {
-  // Helper to safely access mapping items
-  const m = (slotId: string) => mapping[slotId] || [];
+import { VisualMappingState } from "../components/VisualDefinitions";
+
+export function generateJSX(visualId: string, mapping: VisualMappingState, columns: string[]): string {
   
-  // Base theme constant for generated code
-  const THEME = `const theme = {
+  const THEME = `
+  const theme = {
     primary: "#6366f1",
     secondary: "#10b981",
     warning: "#f59e0b",
     danger: "#ef4444",
-    axis: "#94a3b8",
-    grid: "rgba(148, 163, 184, 0.05)",
-    text: "#64748b"
+    grid: "rgba(255,255,255,0.05)",
+    axis: "#64748b",
+    text: "#94a3b8"
   };`;
 
-  // General Aggregation Helper to be injected into the JSX
   const aggregationHelper = `
-  const aggregateData = (rawData, mapping) => {
-    if (!rawData || rawData.length === 0) return [];
+  const aggregateData = (data, mapping) => {
+    if (!data || !mapping) return [];
     
-    // Grouping slots
-    const groups = [
-      ...(mapping.xAxis || []), 
-      ...(mapping.legend || []), 
-      ...(mapping.category || []),
-      ...(mapping.details || []),
-      ...(mapping.rows || []),
-      ...(mapping.columns || []),
-      ...(mapping.breakdown || [])
-    ].map(item => item.name);
+    const xKey = mapping.xAxis?.[0]?.name || mapping.legend?.[0]?.name || columns[0];
+    const yFields = mapping.yAxis || mapping.yAxisColumn || mapping.yAxisLine || mapping.values || [];
+    
+    if (yFields.length === 0) return data.slice(0, 15);
 
-    // Value slots
-    const values = [
-      ...(mapping.yAxis || []), 
-      ...(mapping.yAxisSec || []),
-      ...(mapping.yAxisColumn || []),
-      ...(mapping.yAxisLine || []),
-      ...(mapping.values || []),
-      ...(mapping.target || []),
-      ...(mapping.size || [])
-    ];
-
-    if (groups.length === 0 && values.length > 0) {
-       const res = {};
-       values.forEach(v => {
-         const nums = rawData.map(r => Number(r[v.name] || 0)).filter(n => !isNaN(n));
-         const displayName = v.displayName || v.name;
-         if (v.agg === 'sum') res[displayName] = nums.reduce((a, b) => a + b, 0);
-         else if (v.agg === 'avg') res[displayName] = nums.length > 0 ? nums.reduce((a, b) => a + b, 0) / nums.length : 0;
-         else if (v.agg === 'min') res[displayName] = Math.min(...nums);
-         else if (v.agg === 'max') res[displayName] = Math.max(...nums);
-         else if (v.agg === 'count') res[displayName] = rawData.length;
-         else if (v.agg === 'median') {
-            const sorted = [...nums].sort((a,b) => a-b);
-            const mid = Math.floor(sorted.length / 2);
-            res[displayName] = sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid-1] + sorted[mid]) / 2;
-         }
-         else if (v.agg === 'stdev' || v.agg === 'var') {
-            const avg = nums.reduce((a,b) => a+b, 0) / nums.length;
-            const variance = nums.reduce((s, n) => s + Math.pow(n - avg, 2), 0) / nums.length;
-            res[displayName] = v.agg === 'var' ? variance : Math.sqrt(variance);
-         }
-         else res[displayName] = nums[0];
-       });
-       return [res];
-    }
-
-    const map = new Map();
-    rawData.forEach(row => {
-      const key = groups.map(g => row[g]).join('|');
-      if (!map.has(key)) {
-        const item = { _rawData: [row] };
-        groups.forEach(g => item[g] = row[g]);
-        map.set(key, item);
-      } else {
-        map.get(key)._rawData.push(row);
+    const groups = {};
+    data.forEach(row => {
+      const groupVal = row[xKey] || "N/A";
+      if (!groups[groupVal]) {
+        groups[groupVal] = { [xKey]: groupVal };
+        yFields.forEach(f => groups[groupVal][f.displayName || f.name] = 0);
+        groups[groupVal]._count = 0;
       }
+      
+      yFields.forEach(f => {
+        const val = parseFloat(row[f.name]);
+        if (!isNaN(val)) {
+          const fieldName = f.displayName || f.name;
+          if (f.agg === 'sum' || f.agg === 'avg' || f.agg === 'none' || !f.agg) {
+            groups[groupVal][fieldName] += val;
+          } else if (f.agg === 'min') {
+            groups[groupVal][fieldName] = groups[groupVal][fieldName] === 0 ? val : Math.min(groups[groupVal][fieldName], val);
+          } else if (f.agg === 'max') {
+            groups[groupVal][fieldName] = Math.max(groups[groupVal][fieldName], val);
+          }
+        }
+      });
+      groups[groupVal]._count++;
     });
 
-    return Array.from(map.values()).map(item => {
-      const res = { ...item };
-      values.forEach(v => {
-        const nums = item._rawData.map(r => Number(r[v.name] || 0)).filter(n => !isNaN(n));
-        const displayName = v.displayName || v.name;
-        if (v.agg === 'sum') res[displayName] = nums.reduce((a, b) => a + b, 0);
-        else if (v.agg === 'avg') res[displayName] = nums.length > 0 ? nums.reduce((a, b) => a + b, 0) / nums.length : 0;
-        else if (v.agg === 'min') res[displayName] = Math.min(...nums);
-        else if (v.agg === 'max') res[displayName] = Math.max(...nums);
-        else if (v.agg === 'count') res[displayName] = item._rawData.length;
-        else if (v.agg === 'distinct') res[displayName] = new Set(item._rawData.map(r => r[v.name])).size;
-        else if (v.agg === 'median') {
-            const sorted = [...nums].sort((a,b) => a-b);
-            const mid = Math.floor(sorted.length / 2);
-            res[displayName] = sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid-1] + sorted[mid]) / 2;
+    return Object.values(groups).map(g => {
+      yFields.forEach(f => {
+        if (f.agg === 'avg') {
+          g[f.displayName || f.name] = g[f.displayName || f.name] / g._count;
         }
-        else if (v.agg === 'stdev' || v.agg === 'var') {
-            const avg = nums.reduce((a,b) => a+b, 0) / nums.length;
-            const variance = nums.reduce((s, n) => s + Math.pow(n - avg, 2), 0) / nums.length;
-            res[displayName] = v.agg === 'var' ? variance : Math.sqrt(variance);
-        }
-        else res[displayName] = nums[0];
       });
-      delete res._rawData;
-      return res;
+      return g;
     });
   };`;
+
+  const headerComment = `
+/* 
+  DATA CANVAS O.S. - MÓDULO AUTÓNOMO DE RENDERIZADO
+  Tabla: ${visualId.toUpperCase()}
+  Columnas Disponibles: ${columns.join(', ')}
+  Generado automáticamente para interactividad dinámica.
+*/
+`;
 
   const templates: Record<string, string> = {
     'bar-stacked': `
 function Chart() {
-  \${THEME}
-  \${aggregationHelper}
+  ${THEME}
+  ${aggregationHelper}
 
-  const mapping = \${JSON.stringify(mapping)};
+  const mapping = ${JSON.stringify(mapping)};
   const chartData = aggregateData(data, mapping);
   const xKey = mapping.xAxis?.[0]?.name || columns[0];
   const legendKey = mapping.legend?.[0]?.name;
@@ -151,9 +112,9 @@ function Chart() {
     `,
     'bar-grouped': `
 function Chart() {
-  \${THEME}
-  \${aggregationHelper}
-  const mapping = \${JSON.stringify(mapping)};
+  ${THEME}
+  ${aggregationHelper}
+  const mapping = ${JSON.stringify(mapping)};
   const chartData = aggregateData(data, mapping);
   const xKey = mapping.xAxis?.[0]?.name || columns[0];
 
@@ -183,9 +144,9 @@ function Chart() {
     `,
     'line': `
 function Chart() {
-  \${THEME}
-  \${aggregationHelper}
-  const mapping = \${JSON.stringify(mapping)};
+  ${THEME}
+  ${aggregationHelper}
+  const mapping = ${JSON.stringify(mapping)};
   const chartData = aggregateData(data, mapping);
   const xKey = mapping.xAxis?.[0]?.name || columns[0];
 
@@ -215,9 +176,9 @@ function Chart() {
     `,
     'donut': `
 function Chart() {
-  \${THEME}
-  \${aggregationHelper}
-  const mapping = \${JSON.stringify(mapping)};
+  ${THEME}
+  ${aggregationHelper}
+  const mapping = ${JSON.stringify(mapping)};
   const chartData = aggregateData(data, mapping);
   const COLORS = ["#6366f1", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6"];
   const valKey = mapping.yAxis?.[0]?.name || columns[1];
@@ -248,8 +209,8 @@ function Chart() {
     `,
     'card': `
 function Chart() {
-  \${ aggregationHelper }
-  const mapping = \${JSON.stringify(mapping)};
+  ${ aggregationHelper }
+  const mapping = ${JSON.stringify(mapping)};
   const chartData = aggregateData(data, mapping)[0];
   const valField = mapping.yAxis?.[0];
   const val = chartData?.[valField?.displayName || valField?.name] || 0;
@@ -271,9 +232,9 @@ function Chart() {
     `,
     'treemap': `
 function Chart() {
-  \${THEME}
-  \${aggregationHelper}
-  const mapping = \${JSON.stringify(mapping)};
+  ${THEME}
+  ${aggregationHelper}
+  const mapping = ${JSON.stringify(mapping)};
   const chartData = aggregateData(data, mapping);
   const nameKey = mapping.category?.[0]?.name || columns[0];
   const valKey = mapping.yAxis?.[0]?.displayName || mapping.yAxis?.[0]?.name || columns[1];
@@ -296,7 +257,7 @@ function Chart() {
     `,
     'table': `
 function Chart() {
-  const mapping = \${JSON.stringify(mapping)};
+  const mapping = ${JSON.stringify(mapping)};
   const cols = mapping.columns?.length > 0 ? mapping.columns : columns.map(c => ({ name: c }));
   
   return (
@@ -329,9 +290,9 @@ function Chart() {
     `,
     'bar-horizontal': `
 function Chart() {
-  \${THEME}
-  \${aggregationHelper}
-  const mapping = \${JSON.stringify(mapping)};
+  ${THEME}
+  ${aggregationHelper}
+  const mapping = ${JSON.stringify(mapping)};
   const chartData = aggregateData(data, mapping);
   const yKey = mapping.xAxis?.[0]?.name || columns[0];
 
@@ -359,9 +320,9 @@ function Chart() {
     `,
     'combo': `
 function Chart() {
-  \${THEME}
-  \${aggregationHelper}
-  const mapping = \${JSON.stringify(mapping)};
+  ${THEME}
+  ${aggregationHelper}
+  const mapping = ${JSON.stringify(mapping)};
   const chartData = aggregateData(data, mapping);
   const xKey = mapping.xAxis?.[0]?.name || columns[0];
 
@@ -383,9 +344,9 @@ function Chart() {
     `,
     'scatter': `
 function Chart() {
-  \${THEME}
-  \${aggregationHelper}
-  const mapping = \${JSON.stringify(mapping)};
+  ${THEME}
+  ${aggregationHelper}
+  const mapping = ${JSON.stringify(mapping)};
   const chartData = aggregateData(data, mapping);
   const xKey = mapping.xAxis?.[0]?.displayName || mapping.xAxis?.[0]?.name;
   const yKey = mapping.yAxis?.[0]?.displayName || mapping.yAxis?.[0]?.name;
@@ -407,9 +368,9 @@ function Chart() {
     `,
     'matrix': `
 function Chart() {
-  const mapping = \${JSON.stringify(mapping)};
+  const mapping = ${JSON.stringify(mapping)};
   const [expanded, setExpanded] = React.useState({});
-  \${aggregationHelper}
+  ${aggregationHelper}
   const chartData = aggregateData(data, mapping);
   
   const rowKey = mapping.rows?.[0]?.name || columns[0];
@@ -454,8 +415,8 @@ function Chart() {
     `,
     'kpi': `
 function Chart() {
-  \${aggregationHelper}
-  const mapping = \${JSON.stringify(mapping)};
+  ${aggregationHelper}
+  const mapping = ${JSON.stringify(mapping)};
   const chartData = aggregateData(data, mapping)[0];
   const indField = mapping.yAxis?.[0];
   const targetField = mapping.target?.[0];
@@ -476,7 +437,7 @@ function Chart() {
       <div className="w-full max-w-[200px] space-y-2">
         <div className="flex justify-between text-[9px] font-bold uppercase opacity-60">
            <span>Meta: {target.toLocaleString()}</span>
-           <span>{percent.toFixed(1)}%</span>
+           <span>\${percent.toFixed(1)}%</span>
         </div>
         <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden">
            <div 
@@ -497,7 +458,7 @@ function Chart() {
     `,
     'slicer': `
 function Chart() {
-  const mapping = \${JSON.stringify(mapping)};
+  const mapping = ${JSON.stringify(mapping)};
   const field = mapping.field?.[0]?.name || columns[0];
   const items = [...new Set(data.map(d => d[field]))].sort();
   const [selected, setSelected] = React.useState(null);
@@ -535,9 +496,9 @@ function Chart() {
     ,
     'area': `
 function Chart() {
-  \${THEME}
-  \${aggregationHelper}
-  const mapping = \${JSON.stringify(mapping)};
+  ${THEME}
+  ${aggregationHelper}
+  const mapping = ${JSON.stringify(mapping)};
   const chartData = aggregateData(data, mapping);
   const xKey = mapping.xAxis?.[0]?.name || columns[0];
 
@@ -572,9 +533,9 @@ function Chart() {
     `,
     'waterfall': `
 function Chart() {
-  \${THEME}
-  \${aggregationHelper}
-  const mapping = \${JSON.stringify(mapping)};
+  ${THEME}
+  ${aggregationHelper}
+  const mapping = ${JSON.stringify(mapping)};
   const chartData = aggregateData(data, mapping);
   const catKey = mapping.category?.[0]?.name || columns[0];
   const valKey = mapping.yAxis?.[0]?.displayName || mapping.yAxis?.[0]?.name || columns[1];
@@ -594,9 +555,9 @@ function Chart() {
     `,
     'funnel': `
 function Chart() {
-  \${THEME}
-  \${aggregationHelper}
-  const mapping = \${JSON.stringify(mapping)};
+  ${THEME}
+  ${aggregationHelper}
+  const mapping = ${JSON.stringify(mapping)};
   const chartData = aggregateData(data, mapping).sort((a, b) => (b[mapping.yAxis?.[0]?.name] || 0) - (a[mapping.yAxis?.[0]?.name] || 0));
   const catKey = mapping.category?.[0]?.name || columns[0];
   const valKey = mapping.yAxis?.[0]?.displayName || mapping.yAxis?.[0]?.name || columns[1];
@@ -622,5 +583,6 @@ function Chart() {
     `
   };
 
-  return ((templates as any)[visualId] || templates['bar-stacked']).trim();
+  const finalJSX = ((templates as any)[visualId] || templates['bar-stacked']).trim();
+  return (headerComment + "\n" + finalJSX).trim();
 }
