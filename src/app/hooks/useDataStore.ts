@@ -416,63 +416,35 @@ export const useDataStore = () => {
     },
     publishedDashboards: internal_published,
     publishDashboard: async (d: any) => {
-      const published = { ...d, id: d.id || `pub-${Date.now()}` };
-      internal_published = [...internal_published, published];
-      persist("atr_published_dashboards", internal_published);
       try {
-        await fetch(`${API}/api/dev/published`, {
+        // En lugar de guardar el dashboard en LocalStorage,
+        // mandamos el dashboard entero y sus componentes al backend para guardarlos granularmente
+        const res = await fetch(`${API}/api/marketplace/submit`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem("atr_token")}` },
-          body: JSON.stringify(published)
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${localStorage.getItem("atr_token")}`
+          },
+          // Format expected by backend: { dashboardId, title, category, components }
+          body: JSON.stringify({
+            dashboardId: d.id || `dash-${Date.now()}`,
+            title: d.name || 'Sin Título',
+            category: d.category || 'Global',
+            components: d.components || []
+          })
         });
+
+        if (!res.ok) throw new Error("Fallo al publicar en el Marketplace");
+
+        // Clear local canvas to pretend it was sent? Or keep it.
+        // We just notify success here.
         notify();
       } catch (e) {
-        console.error("Failed to sync published dashboard to backend", e);
+        console.error("Failed to submit to marketplace", e);
       }
     },
-    deletePublishedDashboard: (id: string) => {
-      internal_published = internal_published.filter(p => p.id !== id);
-      persist("atr_published_dashboards", internal_published);
-      persistBackend(`/api/dev/published/${id}`, 'DELETE');
-    },
+    // We removed deletePublishedDashboard and approveDashboard as the old /published flow is dead.
     systemDashboards: internal_system,
-    approveDashboard: (pubId: string, areaId: string) => {
-      const dash = internal_published.find(d => d.id === pubId);
-      if (!dash) return;
-      const newDash = { id: `dash-${Date.now()}`, title: dash.name, category: AREA_NAMES[areaId], config: dash };
-
-      internal_system = { ...internal_system, [areaId]: [...(internal_system[areaId] || []), newDash] };
-      internal_published = internal_published.filter(p => p.id !== pubId);
-
-      persist("atr_system_dashboards", internal_system);
-      persist("atr_published_dashboards", internal_published);
-
-      persistBackend('/api/dev/system', 'POST', { areaId, dashId: newDash.id, dashboard: newDash });
-      
-      // Also delete from published (pending) queue in backend
-      persistBackend(`/api/dev/published/${pubId}`, 'DELETE');
-      
-      // TRIGGER HARVESTING: Register widgets in the marketplace
-      if (dash.components && Array.isArray(dash.components)) {
-        persistBackend('/api/marketplace/harvest', 'POST', {
-          dashboardId: newDash.id,
-          dashboardName: newDash.title,
-          components: dash.components.map((c: any) => ({
-            name: c.name,
-            config: { code: c.code }, // UI logic
-            contract: { source: 'SQL_SERVER' }, // Data contract
-            execution: { 
-              engine: 'SQL_SERVER_DIRECT', 
-              rawQuery: c.query || '', 
-              dataSourceId: c.connectionId 
-            },
-            connection: c.connection // Includes host/db/user/pass for Marketplace registration
-          }))
-        });
-      }
-
-      persistBackend(`/api/dev/published/${pubId}`, 'DELETE');
-    },
     
     // Advanced Management
     hideDashboard: (areaId: string, dashId: string) => {
