@@ -656,25 +656,5 @@ export const useDataStore = () => {
         notify();
       }
     },
-    
-    // --- Canvas Operations ---
-    devCanvas: internal_canvas,
-    saveDevCanvas: async (items: any[]) => {
-      internal_canvas = items;
-      persist("atr_dev_canvas", internal_canvas);
-      notify();
-      
-      // Auto-persist to backend if possible (optional but recommended)
-      const token = localStorage.getItem("atr_token");
-      if (token) {
-        try {
-          await fetch(`${API}/api/dev/canvas`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ items })
-          });
-        } catch (err) { console.error('Failed to sync canvas to backend', err); }
-      }
-    }
   };
 };

@@ -29,7 +29,7 @@ export const VISUAL_DEFINITIONS: Record<string, VisualDef> = {
   'treemap': { id: 'treemap', label: 'Treemap', iconType: 'Grid', slots: [ {id: 'xAxis', label: 'Categoría', type: 'category'}, {id: 'details', label: 'Detalles', type: 'category'}, {id: 'yAxis', label: 'Valores', type: 'value'} ] }
 };
 
-export type VisualSlotItem = { name: string; agg: 'sum' | 'avg' | 'count' | 'distinct' | 'min' | 'max' | 'none'; };
+export type VisualSlotItem = { name: string; agg: 'sum' | 'avg' | 'count' | 'distinct_count' | 'min' | 'max' | 'none'; };
 export type VisualMappingState = Record<string, VisualSlotItem[]>;
 
 // Helper to generate the initial empty state for a mapping
