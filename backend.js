@@ -12,6 +12,41 @@ const __dirname = path.dirname(__filename);
 
 dotenv.config({ path: path.join(__dirname, '.env') });
 
+// --- ENCRYPTION UTILS (AES-256-CBC) ---
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length !== 64) {
+  console.error("FATAL: ENCRYPTION_KEY must be a 64-character hex string.");
+  process.exit(1);
+}
+const IV_LENGTH = 16; // For AES, this is always 16
+
+function encryptText(text) {
+  if (!text) return text;
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY, 'hex'), iv);
+  let encrypted = cipher.update(text);
+  encrypted = Buffer.concat([encrypted, cipher.final()]);
+  return iv.toString('hex') + ':' + encrypted.toString('hex');
+}
+
+function decryptText(text) {
+  if (!text) return text;
+  try {
+    const textParts = text.split(':');
+    const iv = Buffer.from(textParts.shift(), 'hex');
+    const encryptedText = Buffer.from(textParts.join(':'), 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY, 'hex'), iv);
+    let decrypted = decipher.update(encryptedText);
+    decrypted = Buffer.concat([decrypted, decipher.final()]);
+    return decrypted.toString();
+  } catch (e) {
+    console.error("Decryption failed:", e.message);
+    return null;
+  }
+}
+
+
+
 const app = express();
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '50mb' }));
@@ -94,16 +129,57 @@ async function initDatabase() {
   try {
     await sysPool.connect();
     const createIfNotExists = async (name, ddl) => {
-      const exists = await sysPool.request().input('n', sql.VarChar, name).query("SELECT 1 FROM sysobjects WHERE name=@n AND xtype='U'");
-      if (exists.recordset.length === 0) { await sysPool.request().query(ddl); console.log(`✅ Created table: ${name}`); }
+      const exists = await sysPool.request()
+        .input('n', sql.VarChar, name)
+        .query("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = @n");
+      if (exists.recordset.length === 0) {
+        await sysPool.request().query(ddl);
+        console.log(`✅ Created table: ${name}`);
+      }
     };
 
     await createIfNotExists('DevSources', `CREATE TABLE DevSources (id VARCHAR(100) PRIMARY KEY, data NVARCHAR(MAX))`);
     await createIfNotExists('DevMeasures', `CREATE TABLE DevMeasures (id VARCHAR(100) PRIMARY KEY, data NVARCHAR(MAX))`);
     await createIfNotExists('DevCanvas',   `CREATE TABLE DevCanvas   (id VARCHAR(100) PRIMARY KEY, data NVARCHAR(MAX))`);
     await createIfNotExists('PublishedDashboards', `CREATE TABLE PublishedDashboards (id VARCHAR(100) PRIMARY KEY, data NVARCHAR(MAX))`);
-    await createIfNotExists('SystemDashboards', `CREATE TABLE SystemDashboards (areaId VARCHAR(100), dashId VARCHAR(100), data NVARCHAR(MAX), PRIMARY KEY (areaId, dashId))`);
-    await createIfNotExists('DevDrafts', `CREATE TABLE DevDrafts (id VARCHAR(100) PRIMARY KEY, authorId VARCHAR(100), authorName NVARCHAR(200), name NVARCHAR(500), updatedAt NVARCHAR(50), data NVARCHAR(MAX))`);
+    await createIfNotExists('SystemDashboards', `
+      CREATE TABLE SystemDashboards (
+        areaId VARCHAR(100), dashId VARCHAR(100), data NVARCHAR(MAX),
+        PRIMARY KEY (areaId, dashId)
+      )
+    `);
+    await createIfNotExists('DevDrafts', `
+      CREATE TABLE DevDrafts (
+        id         VARCHAR(100)   PRIMARY KEY,
+        authorId   VARCHAR(100),
+        authorName NVARCHAR(200),
+        name       NVARCHAR(500),
+        updatedAt  NVARCHAR(50),
+        data       NVARCHAR(MAX)
+      )
+    `);
+
+    // --- Marketplace Tables ---
+    await createIfNotExists('Marketplace_Dashboards', `
+      CREATE TABLE Marketplace_Dashboards (
+        Id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+        Nombre_Widget NVARCHAR(255) NOT NULL,
+        Dashboard_Padre NVARCHAR(255),
+        Autor_User NVARCHAR(100),
+        IP_Origen NVARCHAR(45),
+        Config_JSON_Encrypted NVARCHAR(MAX) NOT NULL,
+        Categoria NVARCHAR(100),
+        Es_Aprobado BIT DEFAULT 0,
+        Fecha_Creacion DATETIME DEFAULT GETDATE(),
+        Tipo_Visual NVARCHAR(50),
+        Connection_Metadata_Encrypted NVARCHAR(MAX)
+      );
+
+      CREATE INDEX IX_Marketplace_EsAprobado ON Marketplace_Dashboards(Es_Aprobado);
+      CREATE INDEX IX_Marketplace_Categoria ON Marketplace_Dashboards(Categoria);
+      CREATE INDEX IX_Marketplace_TipoVisual ON Marketplace_Dashboards(Tipo_Visual);
+    `);
+
     await createIfNotExists('Marketplace_DataSources', `
       CREATE TABLE Marketplace_DataSources (
         id VARCHAR(100) PRIMARY KEY, name NVARCHAR(200), host NVARCHAR(255), databaseName NVARCHAR(100),
@@ -124,7 +200,7 @@ async function initDatabase() {
     }
   } catch (err) { console.error('❌ Failed to initialize database:', err.message); }
 }
-initDatabase();
+
 
 const tokens = new Map();
 function requireToken(req, res, next) {
@@ -312,10 +388,180 @@ app.get('/api/dev/tables/:connectionId', requireToken, async (req, res) => {
 app.post('/api/dev/sources', requireToken, async (req, res) => {
   const { id, name, host, database, username, password, type, provider, config } = req.body;
   try {
-    const pool = await ensureSysConnection();
-    await pool.request().input('id', sql.VarChar, id).input('name', sql.NVarChar, name || `Source ${id}`).input('host', sql.NVarChar, host || '').input('db', sql.NVarChar, database || '').input('user', sql.NVarChar, username || '').input('pass', sql.NVarChar, password || '').input('owner', sql.VarChar, req.session.userId).input('type', sql.VarChar, type || 'sql').input('provider', sql.VarChar, provider || 'sqlserver').input('config', sql.NVarChar, JSON.stringify(config || {})).query(`
-        IF EXISTS (SELECT 1 FROM Marketplace_DataSources WHERE id = @id)
-          UPDATE Marketplace_DataSources SET name=@name, host=@host, databaseName=@db, username=@user, password=@pass, type=@type, provider=@provider, configJSON=@config WHERE id=@id
+    await sysPool.request()
+      .input('id', sql.VarChar, req.body.id)
+      .input('data', sql.NVarChar, JSON.stringify(req.body))
+      .query(`
+        IF EXISTS (SELECT * FROM DevSources WHERE id = @id)
+          UPDATE DevSources SET data = @data WHERE id = @id
+        ELSE
+          INSERT INTO DevSources (id, data) VALUES (@id, @data)
+      `);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/dev/measures', requireToken, async (req, res) => {
+  try {
+    await sysPool.request()
+      .input('id', sql.VarChar, req.body.id)
+      .input('data', sql.NVarChar, JSON.stringify(req.body))
+      .query(`
+        IF EXISTS (SELECT * FROM DevMeasures WHERE id = @id)
+          UPDATE DevMeasures SET data = @data WHERE id = @id
+        ELSE
+          INSERT INTO DevMeasures (id, data) VALUES (@id, @data)
+      `);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/dev/sources/:id', requireToken, async (req, res) => {
+  try {
+    await sysPool.request()
+      .input('id', sql.VarChar, req.params.id)
+      .query('DELETE FROM DevSources WHERE id = @id');
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/dev/measures/:id', requireToken, async (req, res) => {
+  try {
+    await sysPool.request()
+      .input('id', sql.VarChar, req.params.id)
+      .query('DELETE FROM DevMeasures WHERE id = @id');
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/dev/canvas', requireToken, async (req, res) => {
+  const canvasId = `canvas_user_${req.session.userId}`;
+  try {
+    await sysPool.request()
+      .input('id', sql.VarChar, canvasId)
+      .input('data', sql.NVarChar, JSON.stringify(req.body))
+      .query(`
+        IF EXISTS (SELECT * FROM DevCanvas WHERE id = @id)
+          UPDATE DevCanvas SET data = @data WHERE id = @id
+        ELSE
+          INSERT INTO DevCanvas (id, data) VALUES (@id, @data)
+      `);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/marketplace/submit', requireToken, async (req, res) => {
+  const { dashboardId, title, category, components } = req.body;
+  if (!components || !Array.isArray(components)) {
+    return res.status(400).json({ error: 'No components provided' });
+  }
+
+  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+
+  try {
+    for (const comp of components) {
+      const widgetConfig = JSON.stringify({
+        ...comp,
+      });
+      const encryptedConfig = encryptText(widgetConfig);
+
+      const connectionMetadata = JSON.stringify(comp.connection || {});
+      const encryptedConnection = encryptText(connectionMetadata);
+
+      // Use req.session.userId, as requireToken attaches session to req
+      // We will fallback to "Sistema" if not present
+      const userId = req.session ? req.session.userId : "Sistema";
+
+      await sysPool.request()
+        .input('nombre_widget', sql.NVarChar, comp.name || 'Sin Nombre')
+        .input('dashboard_padre', sql.NVarChar, title || 'Sin Dashboard')
+        .input('autor_user', sql.NVarChar, userId)
+        .input('ip_origen', sql.NVarChar, clientIp)
+        .input('config_json_encrypted', sql.NVarChar, encryptedConfig)
+        .input('categoria', sql.NVarChar, category || 'Global')
+        .input('tipo_visual', sql.NVarChar, comp.type || 'unknown')
+        .input('connection_metadata_encrypted', sql.NVarChar, encryptedConnection)
+        .query(`
+          INSERT INTO Marketplace_Dashboards (
+            Nombre_Widget, Dashboard_Padre, Autor_User, IP_Origen,
+            Config_JSON_Encrypted, Categoria, Tipo_Visual, Connection_Metadata_Encrypted
+          ) VALUES (
+            @nombre_widget, @dashboard_padre, @autor_user, @ip_origen,
+            @config_json_encrypted, @categoria, @tipo_visual, @connection_metadata_encrypted
+          )
+        `);
+    }
+    res.json({ success: true, count: components.length });
+  } catch (err) {
+    console.error('Marketplace submit error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/marketplace/list', requireToken, async (req, res) => {
+  const { tipo, search, scope } = req.query;
+
+  try {
+    let query = `
+      SELECT Id, Nombre_Widget, Dashboard_Padre, Autor_User, Categoria, Es_Aprobado, Fecha_Creacion, Tipo_Visual, Config_JSON_Encrypted
+      FROM Marketplace_Dashboards
+      WHERE 1=1
+    `;
+    const request = sysPool.request();
+
+    if (search) {
+      query += ` AND (Nombre_Widget LIKE @search OR Dashboard_Padre LIKE @search)`;
+      request.input('search', sql.NVarChar, `%${search}%`);
+    }
+    if (tipo) {
+      query += ` AND Tipo_Visual = @tipo`;
+      request.input('tipo', sql.NVarChar, tipo);
+    }
+    if (scope === 'favoritos') {
+       // Logic for favorites could be joined here if you have a favorites table
+    }
+
+    query += ` ORDER BY Fecha_Creacion DESC`;
+
+    const result = await request.query(query);
+
+    // Decrypt the JSON config for the frontend to render the preview/drag-n-drop
+    const decryptedList = result.recordset.map(row => {
+      let config = {};
+      try {
+         config = JSON.parse(decryptText(row.Config_JSON_Encrypted) || '{}');
+      } catch (e) {}
+
+      return {
+        id: row.Id,
+        name: row.Nombre_Widget,
+        dashboard: row.Dashboard_Padre,
+        author: row.Autor_User,
+        category: row.Categoria,
+        approved: row.Es_Aprobado,
+        createdAt: row.Fecha_Creacion,
+        type: row.Tipo_Visual,
+        config: config
+      };
+    });
+
+    res.json({ success: true, items: decryptedList });
+  } catch (err) {
+    console.error('Marketplace list error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/dev/system', requireToken, async (req, res) => {
+  const { areaId, dashId, dashboard } = req.body;
+  try {
+    await sysPool.request()
+      .input('areaId', sql.VarChar, areaId)
+      .input('dashId', sql.VarChar, dashId)
+      .input('data', sql.NVarChar, JSON.stringify(dashboard))
+      .query(`
+        IF EXISTS (SELECT * FROM SystemDashboards WHERE areaId = @areaId AND dashId = @dashId)
+          UPDATE SystemDashboards SET data = @data WHERE areaId = @areaId AND dashId = @dashId
         ELSE
           INSERT INTO Marketplace_DataSources (id, name, host, databaseName, username, password, owner, type, provider, configJSON) 
           VALUES (@id, @name, @host, @db, @user, @pass, @owner, @type, @provider, @config)

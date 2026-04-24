@@ -31,14 +31,21 @@ function Chart() {
       const xVal = row[xAxis] ?? 'N/A';
       if (!grouped[xVal]) {
         grouped[xVal] = { [xAxis]: xVal };
-        series.forEach(s => grouped[xVal][s.name] = { sum: 0, count: 0, max: -Infinity, min: Infinity });
+        series.forEach(s => grouped[xVal][s.name] = { sum: 0, count: 0, max: -Infinity, min: Infinity, vals: new Set() });
       }
       series.forEach(s => {
-        const val = Number(row[s.key]) || 0;
-        grouped[xVal][s.name].sum += val;
+        const rawVal = row[s.key];
+        const val = Number(rawVal);
+        const isNum = !isNaN(val) && rawVal !== null && rawVal !== '';
+
+        if (isNum) {
+          grouped[xVal][s.name].sum += val;
+          if (val > grouped[xVal][s.name].max) grouped[xVal][s.name].max = val;
+          if (val < grouped[xVal][s.name].min) grouped[xVal][s.name].min = val;
+        }
+
         grouped[xVal][s.name].count += 1;
-        if (val > grouped[xVal][s.name].max) grouped[xVal][s.name].max = val;
-        if (val < grouped[xVal][s.name].min) grouped[xVal][s.name].min = val;
+        grouped[xVal][s.name].vals.add(rawVal);
       });
     });
     return Object.values(grouped).map(g => {
@@ -48,6 +55,7 @@ function Chart() {
         else if (s.agg === 'max') out[s.name] = g[s.name].max === -Infinity ? 0 : g[s.name].max;
         else if (s.agg === 'min') out[s.name] = g[s.name].min === Infinity ? 0 : g[s.name].min;
         else if (s.agg === 'count') out[s.name] = g[s.name].count;
+        else if (s.agg === 'distinct') out[s.name] = g[s.name].vals.size;
         else out[s.name] = g[s.name].sum; // default to sum
       });
       return out;
@@ -152,8 +160,33 @@ function Chart() {
         break;
       }
       content = `
-  const total = processedData.reduce((acc, row) => acc + (Number(row["${clean(cardVal.name)}"]) || 0), 0);
-  const formatted = new Intl.NumberFormat('en-US', { notation: "compact", compactDisplay: "short" }).format(total);
+  const cardAggValue = React.useMemo(() => {
+    let sum = 0, count = 0, min = Infinity, max = -Infinity;
+    const vals = new Set();
+    data.forEach(row => {
+      const rawVal = row["${cardVal.name}"];
+      const val = Number(rawVal);
+      const isNum = !isNaN(val) && rawVal !== null && rawVal !== '';
+
+      if (isNum) {
+        sum += val;
+        if (val < min) min = val;
+        if (val > max) max = val;
+      }
+      count++;
+      vals.add(rawVal);
+    });
+
+    const agg = "${cardVal.agg}";
+    if (agg === 'avg') return count ? sum / count : 0;
+    if (agg === 'max') return max === -Infinity ? 0 : max;
+    if (agg === 'min') return min === Infinity ? 0 : min;
+    if (agg === 'count') return count;
+    if (agg === 'distinct') return vals.size;
+    return sum;
+  }, [data]);
+
+  const formatted = new Intl.NumberFormat('en-US', { notation: "compact", compactDisplay: "short" }).format(cardAggValue);
   return (
     <div style={{ padding: 24, display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'center' }}>
       <h3 style={{ fontSize: 12, opacity: 0.6, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>
@@ -181,7 +214,7 @@ function Chart() {
         switch(v.agg) {
           case 'avg': return `{ key: ${key}, label: ${JSON.stringify(v.name + ' (AVG)')}, fn: (rows) => { const n = rows.map(r=>Number(r[${key}])||0); return n.length ? n.reduce((a,b)=>a+b,0)/n.length : 0; } }`;
           case 'count': return `{ key: ${key}, label: ${JSON.stringify(v.name + ' (CNT)')}, fn: (rows) => rows.length }`;
-          case 'distinctcount': return `{ key: ${key}, label: ${JSON.stringify(v.name + ' (DCNT)')}, fn: (rows) => new Set(rows.map(r=>r[${key}])).size }`;
+          case 'distinct': return `{ key: ${key}, label: ${JSON.stringify(v.name + ' (DCNT)')}, fn: (rows) => new Set(rows.map(r=>r[${key}])).size }`;
           case 'max': return `{ key: ${key}, label: ${JSON.stringify(v.name + ' (MAX)')}, fn: (rows) => rows.length ? Math.max(...rows.map(r=>Number(r[${key}])||0)) : 0 }`;
           case 'min': return `{ key: ${key}, label: ${JSON.stringify(v.name + ' (MIN)')}, fn: (rows) => rows.length ? Math.min(...rows.map(r=>Number(r[${key}])||0)) : 0 }`;
           default: return `{ key: ${key}, label: ${JSON.stringify(v.name + ' (SUM)')}, fn: (rows) => rows.reduce((a,r)=>a+(Number(r[${key}])||0),0) }`;
@@ -267,7 +300,7 @@ function Chart() {
     switch(vi.agg) {
       case 'avg': return _fmt(acc.sum / acc.count);
       case 'count': return _fmt(acc.count);
-      case 'distinctcount': return _fmt(new Set(acc.vals).size);
+      case 'distinct': return _fmt(new Set(acc.vals).size);
       case 'max': return _fmt(acc.max === -Infinity ? 0 : acc.max);
       case 'min': return _fmt(acc.min === Infinity ? 0 : acc.min);
       default: return _fmt(acc.sum);

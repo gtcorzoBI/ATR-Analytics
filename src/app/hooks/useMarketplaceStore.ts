@@ -47,12 +47,24 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
     set({ loading: true, error: null });
     const token = localStorage.getItem("atr_token");
     try {
-      const res = await fetch(`${API}/api/marketplace/widgets`, {
+      const res = await fetch(`${API}/api/marketplace/list`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       const data = await res.json();
       if (data.success) {
-        set({ widgets: data.widgets, loading: false });
+        // Mapeamos los items que vienen del nuevo endpoint al formato esperado por el Drawer
+        const mappedWidgets = data.items.map((item: any) => ({
+          id: item.id,
+          versionId: item.id, // Simplificamos version para la inyección
+          name: item.name,
+          category: item.category,
+          versionTag: '1.0.0',
+          description: `Origin: ${item.dashboard}`,
+          ownerId: item.author,
+          config: item.config, // El JSON desencriptado
+          type: item.type
+        }));
+        set({ widgets: mappedWidgets, loading: false });
       } else {
         set({ error: data.error, loading: false });
       }

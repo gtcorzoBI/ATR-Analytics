@@ -29,9 +29,6 @@ export default function AdminDashboard() {
     updateUserAgencies,
     smtpSettings,
     saveSmtpSettings,
-    publishedDashboards,
-    approveDashboard,
-    deletePublishedDashboard,
     systemDashboards,
     hideDashboard,
     archiveDashboard,
@@ -114,24 +111,6 @@ export default function AdminDashboard() {
     setExpandedAreas(prev => 
       prev.includes(area) ? prev.filter(a => a !== area) : [...prev, area]
     );
-  };
-
-  const [approvalModal, setApprovalModal] = useState<{
-    isOpen: boolean;
-    pubId: string;
-    dashName: string;
-    areaId: string;
-  }>({
-    isOpen: false,
-    pubId: '',
-    dashName: '',
-    areaId: ''
-  });
-
-  const handleApprove = (pubId: string, areaId: string) => {
-    approveDashboard(pubId, areaId);
-    setApprovalModal({...approvalModal, isOpen: false});
-    alert("Dashboard aprobado y asignado al área correctamente.");
   };
 
   const handleAssignClick = (type: 'area'|'dashboard', areaId: string, dashboardId?: string, title?: string) => {
@@ -523,44 +502,6 @@ export default function AdminDashboard() {
               })}
             </div>
 
-            {/* Published Queue */}
-            {publishedDashboards.length > 0 && (
-              <div className="mt-8 pt-8 border-t border-gray-200">
-                <div className="flex items-center gap-2 mb-4">
-                  <div className="w-2 h-2 bg-indigo-500 rounded-full animate-pulse" />
-                  <h3 className="text-lg font-bold text-gray-900">Nuevos Dashboards (Publicados por DEV)</h3>
-                </div>
-                <div className="space-y-3">
-                  {publishedDashboards.map(pub => (
-                    <div key={pub.id} className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-bold text-indigo-900">{pub.name}</span>
-                          <span className="text-[10px] bg-indigo-200 text-indigo-700 px-1.5 py-0.5 rounded font-bold uppercase">PENDIENTE</span>
-                        </div>
-                        <p className="text-xs text-indigo-700 mt-0.5">
-                          Enviado por: <strong>{pub.publishedBy}</strong> — <span className="italic">Pendiente de asignar área</span>
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button 
-                          onClick={() => deletePublishedDashboard(pub.id)}
-                          className="px-3 py-1.5 text-xs text-red-600 hover:bg-red-100 rounded-lg font-medium transition"
-                        >
-                          Rechazar
-                        </button>
-                        <button 
-                          onClick={() => setApprovalModal({ isOpen: true, pubId: pub.id, dashName: pub.name, areaId: pub.area })}
-                          className="px-4 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-sm transition"
-                        >
-                          Aprobar y Asignar
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Lado derecho: Creación de Usuarios */}
