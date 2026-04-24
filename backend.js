@@ -177,7 +177,7 @@ async function initDatabase() {
     const createIfNotExists = async (name, ddl) => {
       const exists = await sysPool.request()
         .input('n', sql.VarChar, name)
-        .query("SELECT 1 FROM sysobjects WHERE name=@n AND xtype='U'");
+        .query("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = @n");
       if (exists.recordset.length === 0) {
         await sysPool.request().query(ddl);
         console.log(`✅ Created table: ${name}`);
@@ -315,7 +315,7 @@ async function initDatabase() {
     console.error('❌ Failed to initialize database:', err.message);
   }
 }
-initDatabase();
+
 
 // ── Token store (in-memory for local dev) ─────────────────────────────────
 const tokens = new Map(); // token → { userId, exp }
