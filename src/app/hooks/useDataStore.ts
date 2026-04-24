@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 
-// Mock data definitions based on existing ones
+// ─── Mock data definitions ────────────────────────────────────────────────────
 export const INITIAL_AREAS = [
   "posventa",
   "comercial",
@@ -89,7 +89,7 @@ const INITIAL_USERS: User[] = [
     role: "admin",
     agencies: ["ATR Matriz", "ATR Sucursal"],
     password: mockHash("admin123"),
-    permissions: { areas: [], dashboards: [] }
+    permissions: { areas: [], dashboards: [] },
   },
   {
     id: "2",
@@ -99,85 +99,88 @@ const INITIAL_USERS: User[] = [
     role: "dev",
     agencies: ["ATR Matriz"],
     password: mockHash("dev123"),
-    permissions: { areas: [], dashboards: [] }
-  }
+    permissions: { areas: [], dashboards: [] },
+  },
 ];
 
-// ─── Shared State Manager ───────────────────────────────────────────────────
-// This ensures that all components share the same state and persist it.
+// ─── Shared State Manager ─────────────────────────────────────────────────────
 let listeners: Array<() => void> = [];
-const notify = () => listeners.forEach(l => l());
+const notify = () => listeners.forEach((l) => l());
 
-let internal_users: User[] = JSON.parse(localStorage.getItem("atr_users") || "null") || INITIAL_USERS;
+let internal_users: User[] =
+  JSON.parse(localStorage.getItem("atr_users") || "null") || INITIAL_USERS;
 let internal_smtp: any = JSON.parse(localStorage.getItem("atr_smtp") || "{}");
+let internal_templates: any = JSON.parse(
+  localStorage.getItem("atr_mail_templates") || "null"
+) || {
+  welcome: "Bienvenido a DataCanvas O.S.",
+  area: "Se te ha asignado una nueva área.",
+  dash: "Nuevo dashboard disponible.",
+  pass: "Tu contraseña ha sido restablecida.",
+};
 
-const API = "http://localhost:3001";
+let internal_sources: any[] = JSON.parse(
+  localStorage.getItem("atr_dev_sources") || "[]"
+);
+let internal_measures: any[] = JSON.parse(
+  localStorage.getItem("atr_dev_measures") || "[]"
+);
+let internal_canvas: any[] = JSON.parse(
+  localStorage.getItem("atr_dev_canvas") || "[]"
+);
+let internal_published: any[] = JSON.parse(
+  localStorage.getItem("atr_published_dashboards") || "[]"
+);
+let internal_system: Record<string, any[]> = 
+  JSON.parse(localStorage.getItem("atr_system_dashboards") || "null") || INITIAL_DASHBOARDS_MAP;
+let internal_drafts: any[] = [];
+let internal_tables_map: Record<string, any[]> = {};
+
+const getEnv = (key: string, fallback: string) => {
+  try {
+    return (import.meta as any).env[key] || fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const API = getEnv("VITE_API_URL", "http://localhost:3001");
 
 // Helper: generic fetch and parse
 const fetchFromBackend = async (endpoint: string) => {
   const token = localStorage.getItem("atr_token");
   if (!token) return null;
   try {
-    const res = await fetch(`${API}${endpoint}`, { headers: { Authorization: `Bearer ${token}` } });
+    const res = await fetch(`${API}${endpoint}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
     if (res.ok) {
       const data = await res.json();
       if (data.success) return data;
     }
-  } catch (err) { console.error(`Could not fetch ${endpoint}`, err); }
+  } catch (err) {
+    console.error(`Could not fetch ${endpoint}`, err);
+  }
   return null;
 };
 
-let internal_templates: any = JSON.parse(localStorage.getItem("atr_mail_templates") || "null") || {
-  welcome: "Bienvenido a DataCanvas O.S.",
-  area: "Se te ha asignado una nueva área.",
-  dash: "Nuevo dashboard disponible.",
-  pass: "Tu contraseña ha sido restablecida."
-};
-let internal_sources: any[] = JSON.parse(localStorage.getItem("atr_dev_sources") || "[]");
-let internal_measures: any[] = JSON.parse(localStorage.getItem("atr_dev_measures") || "[]");
-let internal_canvas: any[] = JSON.parse(localStorage.getItem("atr_dev_canvas") || "[]");
-let internal_published: any[] = JSON.parse(localStorage.getItem("atr_published_dashboards") || "[]");
-let internal_system: Record<string, any[]> = JSON.parse(localStorage.getItem("atr_system_dashboards") || "null") || INITIAL_DASHBOARDS_MAP;
-let internal_drafts: any[] = []; // Drafts are always loaded from backend, not localStorage
-
-// Fetch all data from backend helper
+// ─── Fetch all data from backend ─────────────────────────────────────────────
 const fetchAllDataFromBackend = async () => {
-  const usersData = await fetchFromBackend('/api/users');
+  const usersData = await fetchFromBackend("/api/users");
   if (usersData && usersData.users) {
     internal_users = usersData.users;
     localStorage.setItem("atr_users", JSON.stringify(internal_users));
   }
 
-  const devAssets = await fetchFromBackend('/api/dev/assets');
+  const devAssets = await fetchFromBackend("/api/dev/assets");
   if (devAssets) {
     internal_sources = devAssets.sources || [];
     internal_measures = devAssets.measures || [];
     internal_canvas = devAssets.canvas || [];
     internal_published = devAssets.publishedDashboards || [];
-
-    // Merge DB system dashboards with defaults (DB takes precedence or overwrites completely if populated)
-    if (Object.keys(devAssets.systemDashboards || {}).length > 0) {
-      internal_system = devAssets.systemDashboards;
-    }
-
-    // Prune rows before saving to localStorage to stay within 5MB quota
-    const liteSources = internal_sources.map((s: any) => ({ ...s, rows: [] }));
-    const liteMeasures = internal_measures.map((m: any) => ({ ...m, rows: [] }));
-    const liteCanvas = internal_canvas.map((c: any) => ({ ...c, rows: [] }));
-
-    try {
-      localStorage.setItem("atr_dev_sources", JSON.stringify(liteSources));
-      localStorage.setItem("atr_dev_measures", JSON.stringify(liteMeasures));
-      localStorage.setItem("atr_dev_canvas", JSON.stringify(liteCanvas));
-      localStorage.setItem("atr_published_dashboards", JSON.stringify(internal_published));
-      localStorage.setItem("atr_system_dashboards", JSON.stringify(internal_system));
-    } catch (e) {
-      console.warn("Storage quota exceeded, could not persist all dev assets to LocalStorage.", e);
-    }
+    internal_system = devAssets.systemDashboards || devAssets.system || INITIAL_DASHBOARDS_MAP;
   }
-
-  // Fetch drafts separately (metadata only, no heavy data)
-  const draftsData = await fetchFromBackend('/api/dev/drafts');
+  const draftsData = await fetchFromBackend("/api/dev/drafts");
   if (draftsData && draftsData.drafts) {
     internal_drafts = draftsData.drafts;
   }
@@ -185,18 +188,17 @@ const fetchAllDataFromBackend = async () => {
   notify();
 };
 
-// --- Utilities to prune heavy data before syncing ---
+// ─── Strip heavy data before syncing ─────────────────────────────────────────
 const stripDataRows = (item: any): any => {
-  if (typeof item !== 'object' || item === null) return item;
+  if (typeof item !== "object" || item === null) return item;
   if (Array.isArray(item)) return item.map(stripDataRows);
-  
+
   const { rows, ...rest } = item;
-  
-  // Recursively handle components within dashboards or other structures
+
   if (rest.components && Array.isArray(rest.components)) {
     rest.components = rest.components.map(stripDataRows);
   }
-  
+
   return rest;
 };
 
@@ -205,64 +207,87 @@ const serializeLite = (val: any): string => {
   return JSON.stringify(stripDataRows(val));
 };
 
-const persistBackend = async (endpoint: string, method: string, body?: any) => {
+const persistBackend = async (
+  endpoint: string,
+  method: string,
+  body?: any
+) => {
   const token = localStorage.getItem("atr_token");
-  if (!token) return;
+  if (!token) return { success: false, error: "No token" };
   try {
-    await fetch(`${API}${endpoint}`, {
+    const res = await fetch(`${API}${endpoint}`, {
       method,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: body ? JSON.stringify(body) : undefined
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: body ? JSON.stringify(body) : undefined,
     });
-  } catch (err) { console.error(`Error syncing ${endpoint}`, err); }
+    return await res.json();
+  } catch (err: any) {
+    console.error(`Error syncing ${endpoint}`, err);
+    return { success: false, error: err.message };
+  }
 };
 
+let internal_diag_data: any = null;
+
+// ─── Hook ─────────────────────────────────────────────────────────────────────
 export const useDataStore = () => {
   const [, setTick] = useState(0);
-  const forceUpdate = () => setTick(t => t + 1);
+  const forceUpdate = () => setTick((t) => t + 1);
 
   useEffect(() => {
     listeners.push(forceUpdate);
-    
-    // Fetch initial fresh data from DB on mount if possible
+
     fetchAllDataFromBackend();
 
-    // Cross-tab sync: Listen for localStorage changes from other tabs
     const handleStorage = (e: StorageEvent) => {
       if (e.key && e.key.startsWith("atr_")) {
-        // Reload internal state from localStorage
-        internal_users = JSON.parse(localStorage.getItem("atr_users") || "null") || INITIAL_USERS;
-        internal_published = JSON.parse(localStorage.getItem("atr_published_dashboards") || "[]");
-        internal_system = JSON.parse(localStorage.getItem("atr_system_dashboards") || "null") || INITIAL_DASHBOARDS_MAP;
+        internal_users =
+          JSON.parse(localStorage.getItem("atr_users") || "null") ||
+          INITIAL_USERS;
+        internal_published = JSON.parse(
+          localStorage.getItem("atr_published_dashboards") || "[]"
+        );
+        internal_system =
+          JSON.parse(
+            localStorage.getItem("atr_system_dashboards") || "null"
+          ) || INITIAL_DASHBOARDS_MAP;
         forceUpdate();
       }
     };
     window.addEventListener("storage", handleStorage);
-    
-    return () => { 
-      listeners = listeners.filter(l => l !== forceUpdate); 
+
+    return () => {
+      listeners = listeners.filter((l) => l !== forceUpdate);
       window.removeEventListener("storage", handleStorage);
     };
   }, []);
 
   const persist = (key: string, val: any) => {
     try {
-      // Don't save actual data rows in localStorage, it's too heavy (Limit 5MB)
-      const liteString = serializeLite(val);
-      localStorage.setItem(key, liteString);
+      localStorage.setItem(key, serializeLite(val));
     } catch (e) {
-      console.warn(`LocalStorage quota exceeded for key: ${key}. Data was not saved locally.`);
+      console.warn(
+        `LocalStorage quota exceeded for key: ${key}. Data was not saved locally.`
+      );
     }
     notify();
   };
 
   return {
-    // Auth & Users
+    // ── Auth & Users ──────────────────────────────────────────────────────────
     users: internal_users,
+
     createUser: async (u: User) => {
-      // Optimistic update
       const tempId = Date.now().toString();
-      const newUser = { ...u, id: tempId, password: mockHash(u.password || '123456'), mustChangePassword: true };
+      const newUser = {
+        ...u,
+        id: tempId,
+        password: mockHash(u.password || "123456"),
+        mustChangePassword: true,
+      };
       internal_users = [...internal_users, newUser];
       persist("atr_users", internal_users);
 
@@ -273,11 +298,10 @@ export const useDataStore = () => {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              Authorization: `Bearer ${token}`
+              Authorization: `Bearer ${token}`,
             },
-            body: JSON.stringify(u)
+            body: JSON.stringify(u),
           });
-          // Refresh list to get actual ID and exact DB representation
           fetchAllDataFromBackend();
           if (res.ok) {
             const data = await res.json();
@@ -289,9 +313,9 @@ export const useDataStore = () => {
       }
       return newUser;
     },
+
     deleteUser: async (id: string) => {
-      // Optimistic update
-      internal_users = internal_users.filter(u => u.id !== id);
+      internal_users = internal_users.filter((u) => u.id !== id);
       persist("atr_users", internal_users);
 
       const token = localStorage.getItem("atr_token");
@@ -299,16 +323,20 @@ export const useDataStore = () => {
         try {
           await fetch(`${API}/api/users/${id}`, {
             method: "DELETE",
-            headers: { Authorization: `Bearer ${token}` }
+            headers: { Authorization: `Bearer ${token}` },
           });
         } catch (e) {
           console.error("Failed to delete user on backend", e);
         }
       }
     },
+
     adminResetPassword: async (id: string, pass: string) => {
-      // Optimistic update
-      internal_users = internal_users.map(u => u.id === id ? { ...u, password: mockHash(pass), mustChangePassword: true } : u);
+      internal_users = internal_users.map((u) =>
+        u.id === id
+          ? { ...u, password: mockHash(pass), mustChangePassword: true }
+          : u
+      );
       persist("atr_users", internal_users);
 
       const token = localStorage.getItem("atr_token");
@@ -318,18 +346,20 @@ export const useDataStore = () => {
             method: "PUT",
             headers: {
               "Content-Type": "application/json",
-              Authorization: `Bearer ${token}`
+              Authorization: `Bearer ${token}`,
             },
-            body: JSON.stringify({ password: pass, mustChangePassword: true })
+            body: JSON.stringify({ password: pass, mustChangePassword: true }),
           });
         } catch (e) {
           console.error("Failed to reset password on backend", e);
         }
       }
     },
+
     updateUserAgencies: async (id: string, agencies: string[]) => {
-      // Optimistic update
-      internal_users = internal_users.map(u => u.id === id ? { ...u, agencies } : u);
+      internal_users = internal_users.map((u) =>
+        u.id === id ? { ...u, agencies } : u
+      );
       persist("atr_users", internal_users);
 
       const token = localStorage.getItem("atr_token");
@@ -339,18 +369,19 @@ export const useDataStore = () => {
             method: "PUT",
             headers: {
               "Content-Type": "application/json",
-              Authorization: `Bearer ${token}`
+              Authorization: `Bearer ${token}`,
             },
-            body: JSON.stringify({ agencies })
+            body: JSON.stringify({ agencies }),
           });
         } catch (e) {
           console.error("Failed to update agencies on backend", e);
         }
       }
     },
-    getRegularUsers: () => internal_users.filter(u => u.role !== "admin"),
 
-    // SMTP
+    getRegularUsers: () => internal_users.filter((u) => u.role !== "admin"),
+
+    // ── SMTP ──────────────────────────────────────────────────────────────────
     smtpSettings: internal_smtp,
     saveSmtpSettings: (s: any) => {
       internal_smtp = s;
@@ -358,63 +389,143 @@ export const useDataStore = () => {
     },
     mailTemplates: internal_templates,
 
-    // Dev
+    // ── Dev Assets ────────────────────────────────────────────────────────────
     dataSources: internal_sources,
     devMeasures: internal_measures,
     devCanvas: internal_canvas,
+    tables: internal_tables_map,
+
+    testSQLConnection: async (creds: any) => {
+      try {
+        const token = localStorage.getItem("atr_token");
+        const res = await fetch(`${API}/api/dev/test-connection`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(creds),
+        });
+        return await res.json();
+      } catch (e) {
+        return { success: false, error: "Error de red o servidor" };
+      }
+    },
+
+    fetchTables: async (connectionId: string) => {
+      if (!connectionId) return [];
+      try {
+        const token = localStorage.getItem("atr_token");
+        const res = await fetch(`${API}/api/dev/tables/${connectionId}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = await res.json();
+        if (data.diag) {
+          internal_diag_data = data.diag;
+        }
+        if (data.tables) {
+          internal_tables_map = { ...internal_tables_map, [connectionId]: data.tables };
+          notify();
+          return data.tables;
+        }
+      } catch (e) {
+        console.error("Failed to fetch tables", e);
+      }
+      return [];
+    },
+
+    fetchColumns: async (connectionId: string, table: string) => {
+      try {
+        const token = localStorage.getItem("atr_token");
+        const res = await fetch(`${API}/api/dev/columns/${connectionId}?table=${table}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = await res.json();
+        return data.columns || [];
+      } catch (e) {
+        console.error("Failed to fetch columns", e);
+        return [];
+      }
+    },
+
+    fetchPreview: async (connectionId: string, table: string) => {
+      try {
+        const token = localStorage.getItem("atr_token");
+        const res = await fetch(`${API}/api/dev/preview/${connectionId}?table=${table}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const data = await res.json();
+        return data; // Returns { success, rows, columns, executionTime }
+      } catch (e) {
+        console.error("Failed to fetch preview", e);
+        return { success: false, rows: [], columns: [] };
+      }
+    },
+
     clearAllDevState: async () => {
-      // Clear in-memory module state immediately
-      const oldSources = [...internal_sources];
+      const oldSources = [...(internal_sources || [])];
+      const oldMeasures = [...(internal_measures || [])];
       internal_sources = [];
       internal_measures = [];
       internal_canvas = [];
-      // Clear localStorage
       localStorage.removeItem("atr_dev_sources");
       localStorage.removeItem("atr_dev_measures");
       localStorage.removeItem("atr_dev_canvas");
       notify();
-      // Also delete from backend (best-effort, no await)
+
       const token = localStorage.getItem("atr_token");
       if (token) {
-        oldSources.forEach(src => {
+        oldSources.forEach((src) => {
           fetch(`${API}/api/dev/sources/${src.id}`, {
-            method: 'DELETE',
-            headers: { Authorization: `Bearer ${token}` }
-          }).catch(() => {});
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${token}` },
+          }).catch(() => { });
+        });
+        oldMeasures.forEach((m) => {
+          fetch(`${API}/api/dev/measures/${m.id}`, {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${token}` },
+          }).catch(() => { });
         });
       }
     },
-    saveDevSource: (s: any) => {
+
+    saveDevSource: async (s: any) => {
       const src = { ...s, id: s.id || `src-${Date.now()}` };
-      internal_sources = [...internal_sources, src];
+      internal_sources = [...internal_sources.filter(x => x.id !== src.id), src];
       persist("atr_dev_sources", internal_sources);
-      persistBackend('/api/dev/sources', 'POST', src);
+      return await persistBackend("/api/dev/sources", "POST", src);
     },
+
     saveDevMeasure: (m: any) => {
       const measure = { ...m, id: m.id || `msr-${Date.now()}` };
-      internal_measures = [...internal_measures, measure];
+      const existingIdx = internal_measures.findIndex(
+        (existing) => existing.id === measure.id
+      );
+      if (existingIdx >= 0) {
+        internal_measures[existingIdx] = measure;
+      } else {
+        internal_measures = [...internal_measures, measure];
+      }
       persist("atr_dev_measures", internal_measures);
-      const liteMeasure = { ...measure, rows: [] };
-      persistBackend('/api/dev/measures', 'POST', liteMeasure);
+      persistBackend("/api/dev/measures", "POST", { ...measure, rows: [] });
     },
+
     deleteDevSource: (id: string) => {
       internal_sources = internal_sources.filter((s: any) => s.id !== id);
       persist("atr_dev_sources", internal_sources);
-      persistBackend(`/api/dev/sources/${id}`, 'DELETE');
+      persistBackend(`/api/dev/sources/${id}`, "DELETE");
     },
+
     deleteDevMeasure: (id: string) => {
       internal_measures = internal_measures.filter((m: any) => m.id !== id);
       persist("atr_dev_measures", internal_measures);
-      persistBackend(`/api/dev/measures/${id}`, 'DELETE');
+      persistBackend(`/api/dev/measures/${id}`, "DELETE");
     },
-    saveDevCanvas: (items: any[]) => {
-      // The canvas is the entire array of items currently on the board
-      internal_canvas = items;
-      persist("atr_dev_canvas", internal_canvas);
-      const liteItems = items.map(item => ({ ...item, rows: [] }));
-      persistBackend('/api/dev/canvas', 'POST', { id: 'active_canvas', items: liteItems });
-    },
+
+    // ── Published Dashboards ──────────────────────────────────────────────────
     publishedDashboards: internal_published,
+
     publishDashboard: async (d: any) => {
       try {
         // En lugar de guardar el dashboard en LocalStorage,
@@ -448,140 +559,187 @@ export const useDataStore = () => {
     
     // Advanced Management
     hideDashboard: (areaId: string, dashId: string) => {
-      const updatedList = (internal_system[areaId] || []).map(d => d.id === dashId ? { ...d, hidden: !d.hidden } : d);
+      const updatedList = (internal_system[areaId] || []).map((d) =>
+        d.id === dashId ? { ...d, hidden: !d.hidden } : d
+      );
       internal_system = { ...internal_system, [areaId]: updatedList };
       persist("atr_system_dashboards", internal_system);
 
-      const dashboard = updatedList.find(d => d.id === dashId);
-      if (dashboard) persistBackend('/api/dev/system', 'POST', { areaId, dashId, dashboard });
+      const dashboard = updatedList.find((d) => d.id === dashId);
+      if (dashboard)
+        persistBackend("/api/dev/system", "POST", { areaId, dashId, dashboard });
     },
+
     archiveDashboard: (areaId: string, dashId: string) => {
-      const updatedList = (internal_system[areaId] || []).map(d => d.id === dashId ? { ...d, archived: true } : d);
+      const updatedList = (internal_system[areaId] || []).map((d) =>
+        d.id === dashId ? { ...d, archived: true } : d
+      );
       internal_system = { ...internal_system, [areaId]: updatedList };
       persist("atr_system_dashboards", internal_system);
 
-      const dashboard = updatedList.find(d => d.id === dashId);
-      if (dashboard) persistBackend('/api/dev/system', 'POST', { areaId, dashId, dashboard });
+      const dashboard = updatedList.find((d) => d.id === dashId);
+      if (dashboard)
+        persistBackend("/api/dev/system", "POST", { areaId, dashId, dashboard });
     },
+
     deleteSystemDashboard: (areaId: string, dashId: string) => {
-      internal_system = { ...internal_system, [areaId]: (internal_system[areaId] || []).filter(d => d.id !== dashId) };
+      internal_system = {
+        ...internal_system,
+        [areaId]: (internal_system[areaId] || []).filter((d) => d.id !== dashId),
+      };
       persist("atr_system_dashboards", internal_system);
-      persistBackend(`/api/dev/system/${areaId}/${dashId}`, 'DELETE');
+      persistBackend(`/api/dev/system/${areaId}/${dashId}`, "DELETE");
     },
 
-    // Permissions
+    // ── Permissions ───────────────────────────────────────────────────────────
     assignUserToArea: (userId: string, areaId: string) => {
-      internal_users = internal_users.map(u => 
-        u.id === userId 
-          ? { ...u, permissions: { ...u.permissions, areas: [...new Set([...u.permissions.areas, areaId])] } } 
-          : u
-      );
+      internal_users = internal_users.map((u) => {
+        if (u.id !== userId) return u;
+        const current = u.permissions || { areas: [], dashboards: [] };
+        return {
+          ...u,
+          permissions: {
+            ...current,
+            areas: [...new Set([...(current.areas || []), areaId])],
+          },
+        };
+      });
       persist("atr_users", internal_users);
 
-      const u = internal_users.find(u => u.id === userId);
-      if(u) {
-         persistBackend(`/api/users/${userId}/permissions`, 'PUT', u.permissions);
-      }
+      const u = internal_users.find((u) => u.id === userId);
+      if (u) persistBackend(`/api/users/${userId}/permissions`, "PUT", u.permissions);
     },
+
     removeUserFromArea: async (userId: string, areaId: string) => {
-      internal_users = internal_users.map(u =>
-        u.id === userId
-          ? { ...u, permissions: { ...u.permissions, areas: u.permissions.areas.filter((id: string) => id !== areaId) } }
-          : u
-      );
+      internal_users = internal_users.map((u) => {
+        if (u.id !== userId) return u;
+        const current = u.permissions || { areas: [], dashboards: [] };
+        return {
+          ...u,
+          permissions: {
+            ...current,
+            areas: (current.areas || []).filter((id: string) => id !== areaId),
+          },
+        };
+      });
       persist("atr_users", internal_users);
 
-      const u = internal_users.find(u => u.id === userId);
-      if(u) {
-         persistBackend(`/api/users/${userId}/permissions`, 'PUT', u.permissions);
-      }
+      const u = internal_users.find((u) => u.id === userId);
+      if (u) persistBackend(`/api/users/${userId}/permissions`, "PUT", u.permissions);
     },
+
     removeUserFromDashboard: async (userId: string, areaId: string, dashId: string) => {
       const combined = `${areaId}/${dashId}`;
-      internal_users = internal_users.map(u =>
-        u.id === userId
-          ? { ...u, permissions: { ...u.permissions, dashboards: u.permissions.dashboards.filter((id: string) => id !== combined) } }
-          : u
-      );
+      internal_users = internal_users.map((u) => {
+        if (u.id !== userId) return u;
+        const current = u.permissions || { areas: [], dashboards: [] };
+        return {
+          ...u,
+          permissions: {
+            ...current,
+            dashboards: (current.dashboards || []).filter((id: string) => id !== combined),
+          },
+        };
+      });
       persist("atr_users", internal_users);
 
-      const u = internal_users.find(u => u.id === userId);
-      if(u) {
-         persistBackend(`/api/users/${userId}/permissions`, 'PUT', u.permissions);
-      }
+      const u = internal_users.find((u) => u.id === userId);
+      if (u) persistBackend(`/api/users/${userId}/permissions`, "PUT", u.permissions);
     },
+
     assignUserToDashboard: (userId: string, areaId: string, dashId: string) => {
       const combined = `${areaId}/${dashId}`;
-      internal_users = internal_users.map(u => 
-        u.id === userId 
-          ? { ...u, permissions: { ...u.permissions, dashboards: [...new Set([...u.permissions.dashboards, combined])] } } 
-          : u
-      );
+      internal_users = internal_users.map((u) => {
+        if (u.id !== userId) return u;
+        const current = u.permissions || { areas: [], dashboards: [] };
+        return {
+          ...u,
+          permissions: {
+            ...current,
+            dashboards: [...new Set([...(current.dashboards || []), combined])],
+          },
+        };
+      });
       persist("atr_users", internal_users);
 
-      const u = internal_users.find(u => u.id === userId);
-      if(u) {
-         persistBackend(`/api/users/${userId}/permissions`, 'PUT', u.permissions);
-      }
+      const u = internal_users.find((u) => u.id === userId);
+      if (u) persistBackend(`/api/users/${userId}/permissions`, "PUT", u.permissions);
     },
 
-    // ─ Borradores (Drafts) ───────────────────
-    devDrafts: internal_drafts,
+    updateUserActivity: async (userId: string, dashboardTitle: string) => {
+      const now = new Date().toISOString();
+      internal_users = internal_users.map((u) =>
+        u.id === userId ? { ...u, lastActiveAt: now, lastDashboardViewed: dashboardTitle } : u
+      );
+      persist("atr_users", internal_users);
+      persistBackend(`/api/users/${userId}/activity`, "PUT", {
+        lastActiveAt: now,
+        lastDashboardViewed: dashboardTitle,
+      });
+    },
 
-    saveDraft: async (draftId: string, name: string | null, canvasItems: any[], tabsData: any[], connectionsData: any[]) => {
+    // ── Drafts ────────────────────────────────────────────────────────────────
+    drafts: internal_drafts,
+
+    saveDraft: async (
+      draftId: string,
+      name: string | null,
+      canvasItems: any[],
+      tabsData: any[],
+      connectionsData: any[]
+    ) => {
       const token = localStorage.getItem("atr_token");
       if (!token) return null;
       try {
-        // Slim payload — only keep what's needed to restore a session
-        // DO NOT send: rows (raw data), code (auto-generated JSX), passwords
-        const slimTabs = tabsData.map(t => ({
+        const slimTabs = tabsData.map((t) => ({
           id: t.id,
           title: t.title,
           connectionId: t.connectionId,
-          query: t.query,          // SQL to re-run
-          columns: t.columns || [], // column names
-          // code is omitted — it will be regenerated from visualMapping
+          query: t.query,
+          columns: t.columns || [],
         }));
 
-        const slimCanvas = canvasItems.map(i => ({
+        const slimCanvas = canvasItems.map((i) => ({
           instanceId: i.instanceId,
           id: i.id,
           name: i.name,
-          type: i.type, // visual type
-          // no rows, no code
+          type: i.type,
         }));
 
-        const slimConns = connectionsData.map(c => ({
+        const slimConns = connectionsData.map((c) => ({
           id: c.id,
           name: c.name,
           host: c.host,
           database: c.database,
           username: c.username,
-          // password intentionally stripped for security
         }));
 
         const res = await fetch(`${API}/api/dev/drafts`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
           body: JSON.stringify({
             id: draftId,
-            name: name || 'SIN NOMBRE',
+            name: name || "SIN NOMBRE",
             canvas: slimCanvas,
             tabs: slimTabs,
-            connections: slimConns
-          })
+            connections: slimConns,
+          }),
         });
         const d = await res.json();
         if (d.success) {
-          // Refresh drafts list
-          const refreshed = await fetchFromBackend('/api/dev/drafts');
+          const refreshed = await fetchFromBackend("/api/dev/drafts");
           if (refreshed) internal_drafts = refreshed.drafts || [];
           notify();
           return d;
         } else {
-          console.error('Draft save failed:', d.error);
+          console.error("Draft save failed:", d.error);
         }
-      } catch (err) { console.error('Failed to save draft', err); }
+      } catch (err) {
+        console.error("Failed to save draft", err);
+      }
       return null;
     },
 
@@ -590,11 +748,13 @@ export const useDataStore = () => {
       if (!token) return null;
       try {
         const res = await fetch(`${API}/api/dev/drafts/${draftId}`, {
-          headers: { Authorization: `Bearer ${token}` }
+          headers: { Authorization: `Bearer ${token}` },
         });
         const d = await res.json();
         if (d.success) return d.draft;
-      } catch (err) { console.error('Failed to load draft', err); }
+      } catch (err) {
+        console.error("Failed to load draft", err);
+      }
       return null;
     },
 
@@ -603,23 +763,26 @@ export const useDataStore = () => {
       if (!token) return;
       try {
         await fetch(`${API}/api/dev/drafts/${draftId}`, {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${token}` }
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
         });
         internal_drafts = internal_drafts.filter((d: any) => d.id !== draftId);
         notify();
-      } catch (err) { console.error('Failed to delete draft', err); }
+      } catch (err) {
+        console.error("Failed to delete draft", err);
+      }
     },
 
+    // ── Refresh ───────────────────────────────────────────────────────────────
     refreshAssets: async () => {
-      const data = await fetchFromBackend('/api/dev/assets');
+      const data = await fetchFromBackend("/api/dev/assets");
       if (data) {
         internal_sources = data.sources || [];
         internal_measures = data.measures || [];
         internal_canvas = data.canvas || [];
-        internal_published = data.published || [];
-        internal_system = data.system || INITIAL_DASHBOARDS_MAP;
-        
+        internal_published = data.publishedDashboards || data.published || [];
+        internal_system = data.systemDashboards || data.system || INITIAL_DASHBOARDS_MAP;
+
         persist("atr_dev_sources", internal_sources);
         persist("atr_dev_measures", internal_measures);
         persist("atr_dev_canvas", internal_canvas);

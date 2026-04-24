@@ -5,6 +5,7 @@ import LiveWidget from "./LiveWidget";
 import { useMarketplaceStore } from "../hooks/useMarketplaceStore";
 import InjectedWidget from "./InjectedWidget";
 import MarketplaceDrawer from "./MarketplaceDrawer";
+import { useAuth } from "../context/AuthContext";
 
 interface SavedComponent {
   id: string;
@@ -31,11 +32,23 @@ interface DashboardBuilderProps {
   connections: any[];
   dark: boolean;
   onClose: () => void;
+  onEdit?: (widget: any) => void;
 }
 
 // ─── DashboardBuilder ─────────────────────────────────────────────────────────
-export default function DashboardBuilder({ components, connections, dark, onClose }: DashboardBuilderProps) {
+export default function DashboardBuilder({ components, connections, dark, onClose, onEdit }: DashboardBuilderProps) {
+  const { user } = useAuth();
   const { publishDashboard } = useDataStore();
+
+  const getEnv = (key: string, fallback: string) => {
+    try {
+      return (import.meta as any).env[key] || fallback;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const API_BASE = getEnv("VITE_API_URL", "http://localhost:3001");
   const bg = dark ? "#06090f" : "#f1f5f9";
   const surface = dark ? "#161b22" : "#fff";
   const border = dark ? "#1e293b" : "#e2e8f0";
@@ -198,6 +211,9 @@ export default function DashboardBuilder({ components, connections, dark, onClos
     setPublishing(true);
     
     try {
+      const token = localStorage.getItem("atr_token");
+      const authHeader = { Authorization: `Bearer ${token}` };
+      
       const dashboard = {
         name: dashName,
         components: items.map(it => {
@@ -217,16 +233,47 @@ export default function DashboardBuilder({ components, connections, dark, onClos
               username: connDetails.username,
               password: connDetails.password
             } : null,
-            rows: [], 
-            columns: it.columns || [], 
+            rows: original?.rows || it.rows || [], // PERSIST SNAPSHOT
+            columns: it.columns || original?.columns || [], 
+            sourceType: (original as any)?.sourceType || 'SQL',
             x: it.x, y: it.y, w: it.w, h: it.h 
           };
         }),
         publishedAt: new Date().toISOString(),
-        publishedBy: "Desarrollador", 
+        publishedBy: user ? `${user.firstName} ${user.lastName}` : "Desarrollador",
+        authorId: user?.id,
+        authorName: user ? `${user.firstName} ${user.lastName}` : "Desarrollador",
       };
 
+      // 1. Publish to backend (existing)
       publishDashboard(dashboard);
+
+      // 2. Direct Harvest (Autonomous Delivery)
+      try {
+        await fetch(`${API_BASE}/api/marketplace/harvest`, {
+          method: 'POST',
+          headers: { ...authHeader, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            dashboardId: `pub-${Date.now()}`,
+            authorId: user?.id,
+            authorName: user ? `${user.firstName} ${user.lastName}` : "Desarrollador",
+            components: dashboard.components.map(c => ({
+              name: c.name,
+              config: { code: c.code },
+              execution: {
+                engine: c.sourceType === 'FILE' ? 'STATIC_SNAPSHOT' : 'SQL_SERVER_DIRECT',
+                rawQuery: c.query,
+                dataSourceId: c.connectionId,
+                snapshot: c.sourceType === 'FILE' ? c.rows : null // EMBED DATA
+              },
+              connection: c.connection
+            }))
+          })
+        });
+      } catch (e) {
+        console.warn("Direct Harvest failed (dashboard published though):", e);
+      }
+
       setPublished(true);
     } catch (e) {
       console.error("Publish error:", e);
@@ -432,6 +479,7 @@ export default function DashboardBuilder({ components, connections, dark, onClos
         isOpen={showMarketplace} 
         onClose={() => setShowMarketplace(false)} 
         onInject={handleMarketplaceInject}
+        onEdit={onEdit}
       />
 
       {/* ── Publish Modal ────────────────────────────────────────── */}
