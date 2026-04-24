@@ -206,6 +206,26 @@ async function initDatabase() {
     `);
 
     // --- Marketplace Tables ---
+    await createIfNotExists('Marketplace_Dashboards', `
+      CREATE TABLE Marketplace_Dashboards (
+        Id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+        Nombre_Widget NVARCHAR(255) NOT NULL,
+        Dashboard_Padre NVARCHAR(255),
+        Autor_User NVARCHAR(100),
+        IP_Origen NVARCHAR(45),
+        Config_JSON_Encrypted NVARCHAR(MAX) NOT NULL,
+        Categoria NVARCHAR(100),
+        Es_Aprobado BIT DEFAULT 0,
+        Fecha_Creacion DATETIME DEFAULT GETDATE(),
+        Tipo_Visual NVARCHAR(50),
+        Connection_Metadata_Encrypted NVARCHAR(MAX)
+      );
+
+      CREATE INDEX IX_Marketplace_EsAprobado ON Marketplace_Dashboards(Es_Aprobado);
+      CREATE INDEX IX_Marketplace_Categoria ON Marketplace_Dashboards(Categoria);
+      CREATE INDEX IX_Marketplace_TipoVisual ON Marketplace_Dashboards(Tipo_Visual);
+    `);
+
     await createIfNotExists('Marketplace_DataSources', `
       CREATE TABLE Marketplace_DataSources (
         id           VARCHAR(100) PRIMARY KEY,

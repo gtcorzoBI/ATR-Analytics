@@ -49,18 +49,22 @@ export default function DashboardBuilder({ components, connections, dark, onClos
   // Handle Marketplace Injection
   const handleMarketplaceInject = (widget: any) => {
     const instanceId = `inst-mkt-${Date.now()}`;
+    const config = widget.config || {};
+
     const newItem: DashItem = {
       id: widget.id,
       instanceId,
       name: widget.name,
-      code: widget.configJSON ? JSON.parse(widget.configJSON).code : '',
+      code: config.code || '',
+      query: config.query || '',
+      connectionId: config.connectionId || config.connection?.connectionId || '',
       versionId: widget.versionId,
-      executionJSON: widget.executionJSON,
-      x: 20, y: 20, w: 480, h: 360,
+      visualType: widget.type || 'table',
+      x: 20, y: 20, w: config.w || 480, h: config.h || 360,
       isMarketplace: true,
       rows: [],
-      columns: []
-    };
+      columns: config.columns || []
+    } as any;
     
     const updated = [...devCanvas, newItem];
     saveDevCanvas(updated);
