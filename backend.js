@@ -9,6 +9,8 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+dotenv.config({ path: path.join(__dirname, '.env') });
+
 // --- ENCRYPTION UTILS (AES-256-CBC) ---
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
 if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length !== 64) {
@@ -42,7 +44,7 @@ function decryptText(text) {
   }
 }
 
-dotenv.config({ path: path.join(__dirname, '.env') });
+
 
 const app = express();
 app.use(cors({ origin: '*' }));
@@ -732,26 +734,26 @@ app.get('/api/marketplace/list', requireToken, async (req, res) => {
   const { tipo, search, scope } = req.query;
 
   try {
-    let query = \`
+    let query = `
       SELECT Id, Nombre_Widget, Dashboard_Padre, Autor_User, Categoria, Es_Aprobado, Fecha_Creacion, Tipo_Visual, Config_JSON_Encrypted
       FROM Marketplace_Dashboards
       WHERE 1=1
-    \`;
+    `;
     const request = sysPool.request();
 
     if (search) {
-      query += \` AND (Nombre_Widget LIKE @search OR Dashboard_Padre LIKE @search)\`;
-      request.input('search', sql.NVarChar, \`%\${search}%\`);
+      query += ` AND (Nombre_Widget LIKE @search OR Dashboard_Padre LIKE @search)`;
+      request.input('search', sql.NVarChar, `%${search}%`);
     }
     if (tipo) {
-      query += \` AND Tipo_Visual = @tipo\`;
+      query += ` AND Tipo_Visual = @tipo`;
       request.input('tipo', sql.NVarChar, tipo);
     }
     if (scope === 'favoritos') {
        // Logic for favorites could be joined here if you have a favorites table
     }
 
-    query += \` ORDER BY Fecha_Creacion DESC\`;
+    query += ` ORDER BY Fecha_Creacion DESC`;
 
     const result = await request.query(query);
 
