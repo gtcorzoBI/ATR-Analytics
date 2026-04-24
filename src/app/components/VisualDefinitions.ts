@@ -17,7 +17,7 @@ export const VISUAL_DEFINITIONS: Record<string, VisualDef> = {
   'line': { id: 'line', label: 'Líneas', iconType: 'RefreshCw', slots: [ {id: 'xAxis', label: 'Eje X', type: 'category'}, {id: 'yAxis', label: 'Eje Y', type: 'value'}, {id: 'yAxisSec', label: 'Eje Y Secundario', type: 'value'}, {id: 'legend', label: 'Leyenda', type: 'series'}, {id: 'smallMultiples', label: 'Múltiplos', type: 'category'}, {id: 'tooltips', label: 'Tooltips', type: 'value'} ] },
   'bar-h': { id: 'bar-h', label: 'Barras Horizontales', iconType: 'Layers', slots: [ {id: 'xAxis', label: 'Eje Y (Categoría)', type: 'category'}, {id: 'yAxis', label: 'Eje X (Valor)', type: 'value'}, {id: 'legend', label: 'Leyenda', type: 'series'}, {id: 'smallMultiples', label: 'Múltiplos', type: 'category'}, {id: 'tooltips', label: 'Tooltips', type: 'value'} ] },
   'area': { id: 'area', label: 'Área', iconType: 'LayoutDashboard', slots: [ {id: 'xAxis', label: 'Eje X', type: 'category'}, {id: 'yAxis', label: 'Eje Y', type: 'value'}, {id: 'tooltips', label: 'Tooltips', type: 'value'} ] },
-  'table': { id: 'table', label: 'Tabla', iconType: 'Table2', slots: [ {id: 'cols', label: 'Columnas', type: 'category'} ] },
+  'table': { id: 'table', label: 'Tabla', iconType: 'Table2', slots: [ {id: 'cols', label: 'Columnas', type: 'category'}, {id: 'values', label: 'Valores', type: 'value'} ] },
   'matrix': { id: 'matrix', label: 'Matriz', iconType: 'Grid', slots: [ {id: 'rows', label: 'Filas', type: 'category'}, {id: 'cols', label: 'Columnas', type: 'category'}, {id: 'values', label: 'Valores', type: 'value'} ] },
   'slicer': { id: 'slicer', label: 'Segmentador', iconType: 'Filter', slots: [ {id: 'xAxis', label: 'Campo Filtro', type: 'category'} ] },
   'card': { id: 'card', label: 'Tarjeta', iconType: 'FileText', slots: [ {id: 'yAxis', label: 'Valor', type: 'value'}, {id: 'tooltips', label: 'Tooltips', type: 'value'} ] },
@@ -29,7 +29,7 @@ export const VISUAL_DEFINITIONS: Record<string, VisualDef> = {
   'treemap': { id: 'treemap', label: 'Treemap', iconType: 'Grid', slots: [ {id: 'xAxis', label: 'Categoría', type: 'category'}, {id: 'details', label: 'Detalles', type: 'category'}, {id: 'yAxis', label: 'Valores', type: 'value'} ] }
 };
 
-export type VisualSlotItem = { name: string; agg: 'sum' | 'avg' | 'count' | 'distinct_count' | 'min' | 'max' | 'none'; };
+export type VisualSlotItem = { name: string; agg: 'sum' | 'avg' | 'count' | 'distinct' | 'min' | 'max' | 'none'; };
 export type VisualMappingState = Record<string, VisualSlotItem[]>;
 
 // Helper to generate the initial empty state for a mapping
