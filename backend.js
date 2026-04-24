@@ -9,6 +9,39 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// --- ENCRYPTION UTILS (AES-256-CBC) ---
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+if (!ENCRYPTION_KEY || ENCRYPTION_KEY.length !== 64) {
+  console.error("FATAL: ENCRYPTION_KEY must be a 64-character hex string.");
+  process.exit(1);
+}
+const IV_LENGTH = 16; // For AES, this is always 16
+
+function encryptText(text) {
+  if (!text) return text;
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY, 'hex'), iv);
+  let encrypted = cipher.update(text);
+  encrypted = Buffer.concat([encrypted, cipher.final()]);
+  return iv.toString('hex') + ':' + encrypted.toString('hex');
+}
+
+function decryptText(text) {
+  if (!text) return text;
+  try {
+    const textParts = text.split(':');
+    const iv = Buffer.from(textParts.shift(), 'hex');
+    const encryptedText = Buffer.from(textParts.join(':'), 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(ENCRYPTION_KEY, 'hex'), iv);
+    let decrypted = decipher.update(encryptedText);
+    decrypted = Buffer.concat([decrypted, decipher.final()]);
+    return decrypted.toString();
+  } catch (e) {
+    console.error("Decryption failed:", e.message);
+    return null;
+  }
+}
+
 dotenv.config({ path: path.join(__dirname, '.env') });
 
 const app = express();
@@ -647,28 +680,106 @@ app.post('/api/dev/canvas', requireToken, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/dev/published', requireToken, async (req, res) => {
+app.post('/api/marketplace/submit', requireToken, async (req, res) => {
+  const { dashboardId, title, category, components } = req.body;
+  if (!components || !Array.isArray(components)) {
+    return res.status(400).json({ error: 'No components provided' });
+  }
+
+  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+
   try {
-    await sysPool.request()
-      .input('id', sql.VarChar, req.body.id)
-      .input('data', sql.NVarChar, JSON.stringify(req.body))
-      .query(`
-        IF EXISTS (SELECT * FROM PublishedDashboards WHERE id = @id)
-          UPDATE PublishedDashboards SET data = @data WHERE id = @id
-        ELSE
-          INSERT INTO PublishedDashboards (id, data) VALUES (@id, @data)
-      `);
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    for (const comp of components) {
+      const widgetConfig = JSON.stringify({
+        ...comp,
+      });
+      const encryptedConfig = encryptText(widgetConfig);
+
+      const connectionMetadata = JSON.stringify(comp.connection || {});
+      const encryptedConnection = encryptText(connectionMetadata);
+
+      // Use req.session.userId, as requireToken attaches session to req
+      // We will fallback to "Sistema" if not present
+      const userId = req.session ? req.session.userId : "Sistema";
+
+      await sysPool.request()
+        .input('nombre_widget', sql.NVarChar, comp.name || 'Sin Nombre')
+        .input('dashboard_padre', sql.NVarChar, title || 'Sin Dashboard')
+        .input('autor_user', sql.NVarChar, userId)
+        .input('ip_origen', sql.NVarChar, clientIp)
+        .input('config_json_encrypted', sql.NVarChar, encryptedConfig)
+        .input('categoria', sql.NVarChar, category || 'Global')
+        .input('tipo_visual', sql.NVarChar, comp.type || 'unknown')
+        .input('connection_metadata_encrypted', sql.NVarChar, encryptedConnection)
+        .query(`
+          INSERT INTO Marketplace_Dashboards (
+            Nombre_Widget, Dashboard_Padre, Autor_User, IP_Origen,
+            Config_JSON_Encrypted, Categoria, Tipo_Visual, Connection_Metadata_Encrypted
+          ) VALUES (
+            @nombre_widget, @dashboard_padre, @autor_user, @ip_origen,
+            @config_json_encrypted, @categoria, @tipo_visual, @connection_metadata_encrypted
+          )
+        `);
+    }
+    res.json({ success: true, count: components.length });
+  } catch (err) {
+    console.error('Marketplace submit error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.delete('/api/dev/published/:id', requireToken, async (req, res) => {
+app.get('/api/marketplace/list', requireToken, async (req, res) => {
+  const { tipo, search, scope } = req.query;
+
   try {
-    await sysPool.request()
-      .input('id', sql.VarChar, req.params.id)
-      .query('DELETE FROM PublishedDashboards WHERE id = @id');
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    let query = \`
+      SELECT Id, Nombre_Widget, Dashboard_Padre, Autor_User, Categoria, Es_Aprobado, Fecha_Creacion, Tipo_Visual, Config_JSON_Encrypted
+      FROM Marketplace_Dashboards
+      WHERE 1=1
+    \`;
+    const request = sysPool.request();
+
+    if (search) {
+      query += \` AND (Nombre_Widget LIKE @search OR Dashboard_Padre LIKE @search)\`;
+      request.input('search', sql.NVarChar, \`%\${search}%\`);
+    }
+    if (tipo) {
+      query += \` AND Tipo_Visual = @tipo\`;
+      request.input('tipo', sql.NVarChar, tipo);
+    }
+    if (scope === 'favoritos') {
+       // Logic for favorites could be joined here if you have a favorites table
+    }
+
+    query += \` ORDER BY Fecha_Creacion DESC\`;
+
+    const result = await request.query(query);
+
+    // Decrypt the JSON config for the frontend to render the preview/drag-n-drop
+    const decryptedList = result.recordset.map(row => {
+      let config = {};
+      try {
+         config = JSON.parse(decryptText(row.Config_JSON_Encrypted) || '{}');
+      } catch (e) {}
+
+      return {
+        id: row.Id,
+        name: row.Nombre_Widget,
+        dashboard: row.Dashboard_Padre,
+        author: row.Autor_User,
+        category: row.Categoria,
+        approved: row.Es_Aprobado,
+        createdAt: row.Fecha_Creacion,
+        type: row.Tipo_Visual,
+        config: config
+      };
+    });
+
+    res.json({ success: true, items: decryptedList });
+  } catch (err) {
+    console.error('Marketplace list error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/dev/system', requireToken, async (req, res) => {
