@@ -14,6 +14,9 @@ interface SavedComponent {
   columns: string[];
   query?: string;
   connectionId?: string;
+  versionId?: string;
+  executionJSON?: string;
+  visualType?: string;
 }
 
 interface DashItem extends SavedComponent {
