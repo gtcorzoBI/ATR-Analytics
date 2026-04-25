@@ -4,7 +4,17 @@ import { AdminUserCreation, AGENCIES } from "../components/AdminUserCreation";
 import { useDataStore, INITIAL_AREAS, INITIAL_DASHBOARDS_MAP, AREA_NAMES } from "../hooks/useDataStore";
 import { ChevronDown, ChevronRight, MoreVertical, ShieldCheck, Shield, Trash2, KeyRound, Building2, Save, Mail, Eye, EyeOff, Archive, Trash } from "lucide-react";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
+// API Base configuration
+const getEnv = (key: string, fallback: string) => {
+  try {
+    return (import.meta as any).env[key] || fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const API_BASE = getEnv("VITE_API_URL", "http://localhost:3001");
+const APP_URL = getEnv("VITE_APP_URL", window.location.origin);
 
 export default function AdminDashboard() {
   const { 
@@ -130,16 +140,14 @@ export default function AdminDashboard() {
       if (res.ok) {
         const d = await res.json();
         if (d.success) {
-          const baseUrl = import.meta.env.VITE_APP_URL || window.location.origin;
-          magicTokenUrl = `${baseUrl}/login?token=${d.token}`;
+          magicTokenUrl = `${APP_URL}/login?token=${d.token}`;
         }
       }
     } catch (e) { console.error("Error generating magic token", e); }
 
     if(smtpSettings.tplWelcome) {
-      const baseUrl = import.meta.env.VITE_APP_URL || window.location.origin;
-      const loginUrl = magicTokenUrl || `${baseUrl}/login`;
-      const body = smtpSettings.tplWelcome
+      const loginUrl = magicTokenUrl || `${APP_URL}/login`;
+      const body = (smtpSettings.tplWelcome || "")
         .replace(/{{name}}/g, userData.firstName)
         .replace(/{{email}}/g, userData.email)
         .replace(/{{password}}/g, userData.password)
@@ -154,20 +162,20 @@ export default function AdminDashboard() {
     
     if (assignmentModal.type === 'area') {
       assignUserToArea(userId, assignmentModal.areaId);
-      if(smtpSettings.tplArea && user) {
-        const body = smtpSettings.tplArea
+      if((smtpSettings.tplArea || "") && user) {
+        const body = (smtpSettings.tplArea || "")
           .replace('{{name}}', user.firstName)
-          .replace('{{area}}', AREA_NAMES[assignmentModal.areaId]);
+          .replace('{{area}}', AREA_NAMES[assignmentModal.areaId] || assignmentModal.areaId);
         sendEmail(user.email, "Nueva área asignada", body);
       }
     } else if (assignmentModal.type === 'dashboard' && assignmentModal.dashboardId) {
       assignUserToDashboard(userId, assignmentModal.areaId, assignmentModal.dashboardId);
-      if(smtpSettings.tplDashboard && user) {
+      if((smtpSettings.tplDashboard || "") && user) {
         const tpl = smtpSettings.tplDashboard || "";
         const body = tpl
           .replace('{{name}}', user.firstName)
-          .replace('{{area}}', AREA_NAMES[assignmentModal.areaId])
-          .replace('{{dashboard}}', assignmentModal.title);
+          .replace('{{area}}', AREA_NAMES[assignmentModal.areaId] || assignmentModal.areaId)
+          .replace('{{dashboard}}', assignmentModal.title || "");
         sendEmail(user.email, "Nuevo dashboard asignado", body);
       }
     }
@@ -198,18 +206,16 @@ export default function AdminDashboard() {
         if (res.ok) {
           const d = await res.json();
           if (d.success) {
-            const baseUrl = import.meta.env.VITE_APP_URL || window.location.origin;
-            magicTokenUrl = `${baseUrl}/login?token=${d.token}`;
+            magicTokenUrl = `${APP_URL}/login?token=${d.token}`;
           }
         }
       } catch (e) { console.error("Error generating magic token", e); }
 
       const user = getRegularUsers().find(u => u.id === userId);
-      if(smtpSettings.tplPassword && user) {
-        const baseUrl = import.meta.env.VITE_APP_URL || window.location.origin;
-        const loginUrl = magicTokenUrl || `${baseUrl}/login`;
-        const body = smtpSettings.tplPassword
-          .replace(/{{name}}/g, user.firstName)
+      if((smtpSettings.tplPassword || "") && user) {
+        const loginUrl = magicTokenUrl || `${APP_URL}/login`;
+        const body = (smtpSettings.tplPassword || "")
+          .replace(/{{name}}/g, user.firstName || "")
           .replace(/{{password}}/g, newPass)
           .replace(/{{url}}/g, loginUrl);
         sendEmail(user.email, "Restablecimiento de contraseña", body);
@@ -560,9 +566,9 @@ export default function AdminDashboard() {
                   }
 
                   return filtered.map(u => {
-                    const fullName = `${u.firstName} ${u.lastName}`;
+                    const fullName = `${u.firstName || ""} ${u.lastName || ""}`;
                     const active = isUserActive(u.lastActiveAt);
-                    const agenciesList = u.agencies && u.agencies.length > 0 ? u.agencies : (u.agency ? [u.agency] : []);
+                    const agenciesList = (u.agencies || []).length > 0 ? u.agencies : (u.agency ? [u.agency] : []);
                     const limitAgencies = agenciesList.slice(0, 2);
                     const extraAgencies = agenciesList.length - 2;
 

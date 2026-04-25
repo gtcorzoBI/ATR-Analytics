@@ -1,7 +1,10 @@
+export type AggregationType = 'none' | 'sum' | 'avg' | 'min' | 'max' | 'distinct' | 'count' | 'stdev' | 'var' | 'median';
+
 export interface VisualSlotDef {
   id: string;
   label: string;
-  type: 'category' | 'value' | 'series';
+  type: 'category' | 'value' | 'series' | 'detail' | 'size' | 'trend' | 'target';
+  allowAggregation?: boolean;
 }
 
 export interface VisualDef {
@@ -9,7 +12,21 @@ export interface VisualDef {
   label: string;
   iconType: string;
   slots: VisualSlotDef[];
+  description?: string;
 }
+
+export const VISUAL_AGGREGATIONS: { id: AggregationType; label: string }[] = [
+  { id: 'none', label: 'No resumir' },
+  { id: 'sum', label: 'Suma' },
+  { id: 'avg', label: 'Promedio' },
+  { id: 'min', label: 'Mínimo' },
+  { id: 'max', label: 'Máximo' },
+  { id: 'distinct', label: 'Recuento (distintivo)' },
+  { id: 'count', label: 'Recuento' },
+  { id: 'stdev', label: 'Desviación estándar' },
+  { id: 'var', label: 'Varianza' },
+  { id: 'median', label: 'Mediana' }
+];
 
 export const VISUAL_DEFINITIONS: Record<string, VisualDef> = {
   'bar': { id: 'bar', label: 'Barras Agrupadas', iconType: 'BarChart3', slots: [ {id: 'xAxis', label: 'Eje X', type: 'category'}, {id: 'yAxis', label: 'Eje Y', type: 'value'}, {id: 'legend', label: 'Leyenda', type: 'series'}, {id: 'smallMultiples', label: 'Múltiplos pequeños', type: 'category'}, {id: 'tooltips', label: 'Tooltips', type: 'value'} ] },
@@ -29,8 +46,6 @@ export const VISUAL_DEFINITIONS: Record<string, VisualDef> = {
   'treemap': { id: 'treemap', label: 'Treemap', iconType: 'Grid', slots: [ {id: 'xAxis', label: 'Categoría', type: 'category'}, {id: 'details', label: 'Detalles', type: 'category'}, {id: 'yAxis', label: 'Valores', type: 'value'} ] }
 };
 
-export type VisualSlotItem = { name: string; agg: 'sum' | 'avg' | 'count' | 'distinct' | 'min' | 'max' | 'none'; };
 export type VisualMappingState = Record<string, VisualSlotItem[]>;
 
-// Helper to generate the initial empty state for a mapping
 export const getEmptyMapping = (): VisualMappingState => ({});
