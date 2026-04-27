@@ -231,7 +231,7 @@ export default function RelationCanvas({ nodes, edges, onNodesChange, onEdgesCha
               <Database className="w-3.5 h-3.5 mr-1.5 text-indigo-500" />
               <span className="truncate">{node.title}</span>
             </div>
-            <div className="py-1">
+            <div className="py-1 overflow-y-auto" style={{ maxHeight: '280px' }}>
               {node.fields.map(field => (
                 <div 
                   key={field.name} 

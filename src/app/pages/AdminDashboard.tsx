@@ -4,38 +4,32 @@ import { AdminUserCreation, AGENCIES } from "../components/AdminUserCreation";
 import { useDataStore, INITIAL_AREAS, INITIAL_DASHBOARDS_MAP, AREA_NAMES } from "../hooks/useDataStore";
 import { ChevronDown, ChevronRight, MoreVertical, ShieldCheck, Shield, Trash2, KeyRound, Building2, Save, Mail, Eye, EyeOff, Archive, Trash } from "lucide-react";
 
-// API Base configuration
-const getEnv = (key: string, fallback: string) => {
-  try {
-    return (import.meta as any).env[key] || fallback;
-  } catch {
-    return fallback;
-  }
-};
-
-const API_BASE = getEnv("VITE_API_URL", "http://localhost:3001");
-const APP_URL = getEnv("VITE_APP_URL", window.location.origin);
+const API_BASE = (import.meta as any).env.VITE_API_URL || "http://localhost:3001";
 
 export default function AdminDashboard() {
-  const { 
-    createUser, 
-    assignUserToArea, 
+  const {
+    createUser,
+    assignUserToArea,
     removeUserFromArea,
     removeUserFromDashboard,
-    assignUserToDashboard, 
+    assignUserToDashboard,
     getRegularUsers,
     deleteUser,
     adminResetPassword,
     updateUserAgencies,
     smtpSettings,
     saveSmtpSettings,
+    publishedDashboards,
+    approveDashboard,
+    rejectDashboard,
+    deletePublishedDashboard,
     systemDashboards,
     hideDashboard,
     archiveDashboard,
     deleteSystemDashboard,
     refreshAssets
-  } = useDataStore();
-  
+  } = useDataStore() as any;
+
   useEffect(() => {
     refreshAssets();
   }, [refreshAssets]);
@@ -44,7 +38,7 @@ export default function AdminDashboard() {
   const [searchQuery, setSearchQuery] = useState("");
   const [tableSearchQuery, setTableSearchQuery] = useState("");
   const [localSmtp, setLocalSmtp] = useState(smtpSettings);
-  
+
   useEffect(() => {
     setLocalSmtp(smtpSettings);
   }, [smtpSettings]);
@@ -108,12 +102,30 @@ export default function AdminDashboard() {
   });
 
   const toggleArea = (area: string) => {
-    setExpandedAreas(prev => 
+    setExpandedAreas(prev =>
       prev.includes(area) ? prev.filter(a => a !== area) : [...prev, area]
     );
   };
 
-  const handleAssignClick = (type: 'area'|'dashboard', areaId: string, dashboardId?: string, title?: string) => {
+  const [approvalModal, setApprovalModal] = useState<{
+    isOpen: boolean;
+    pubId: string;
+    dashName: string;
+    areaId: string;
+  }>({
+    isOpen: false,
+    pubId: '',
+    dashName: '',
+    areaId: ''
+  });
+
+  const handleApprove = (pubId: string, areaId: string) => {
+    approveDashboard(pubId, areaId);
+    setApprovalModal({ ...approvalModal, isOpen: false });
+    alert("Dashboard aprobado y asignado al área correctamente.");
+  };
+
+  const handleAssignClick = (type: 'area' | 'dashboard', areaId: string, dashboardId?: string, title?: string) => {
     setSearchQuery("");
     setAssignmentModal({
       isOpen: true,
@@ -140,14 +152,16 @@ export default function AdminDashboard() {
       if (res.ok) {
         const d = await res.json();
         if (d.success) {
-          magicTokenUrl = `${APP_URL}/login?token=${d.token}`;
+          const baseUrl = (import.meta as any).env.VITE_APP_URL || window.location.origin;
+          magicTokenUrl = `${baseUrl}/login?token=${d.token}`;
         }
       }
     } catch (e) { console.error("Error generating magic token", e); }
 
-    if(smtpSettings.tplWelcome) {
-      const loginUrl = magicTokenUrl || `${APP_URL}/login`;
-      const body = (smtpSettings.tplWelcome || "")
+    if (smtpSettings.tplWelcome) {
+      const baseUrl = (import.meta as any).env.VITE_APP_URL || window.location.origin;
+      const loginUrl = magicTokenUrl || `${baseUrl}/login`;
+      const body = smtpSettings.tplWelcome
         .replace(/{{name}}/g, userData.firstName)
         .replace(/{{email}}/g, userData.email)
         .replace(/{{password}}/g, userData.password)
@@ -157,20 +171,20 @@ export default function AdminDashboard() {
   };
 
   const submitAssignment = (userId: string) => {
-    if(!userId) return;
-    const user = getRegularUsers().find(u => u.id === userId);
-    
+    if (!userId) return;
+    const user = getRegularUsers().find((u: any) => u.id === userId);
+
     if (assignmentModal.type === 'area') {
       assignUserToArea(userId, assignmentModal.areaId);
-      if((smtpSettings.tplArea || "") && user) {
-        const body = (smtpSettings.tplArea || "")
+      if (smtpSettings.tplArea && user) {
+        const body = smtpSettings.tplArea
           .replace('{{name}}', user.firstName)
           .replace('{{area}}', AREA_NAMES[assignmentModal.areaId] || assignmentModal.areaId);
         sendEmail(user.email, "Nueva área asignada", body);
       }
     } else if (assignmentModal.type === 'dashboard' && assignmentModal.dashboardId) {
       assignUserToDashboard(userId, assignmentModal.areaId, assignmentModal.dashboardId);
-      if((smtpSettings.tplDashboard || "") && user) {
+      if (smtpSettings.tplDashboard && user) {
         const tpl = smtpSettings.tplDashboard || "";
         const body = tpl
           .replace('{{name}}', user.firstName)
@@ -179,7 +193,7 @@ export default function AdminDashboard() {
         sendEmail(user.email, "Nuevo dashboard asignado", body);
       }
     }
-    setAssignmentModal({...assignmentModal, isOpen: false});
+    setAssignmentModal({ ...assignmentModal, isOpen: false });
     alert("Usuario asignado correctamente");
   };
 
@@ -194,7 +208,7 @@ export default function AdminDashboard() {
     if (newPass) {
       if (newPass.length < 6) return alert("La contraseña debe tener mínimo 6 caracteres.");
       adminResetPassword(userId, newPass);
-      
+
       let magicTokenUrl = "";
       try {
         const token = localStorage.getItem("atr_token");
@@ -206,16 +220,18 @@ export default function AdminDashboard() {
         if (res.ok) {
           const d = await res.json();
           if (d.success) {
-            magicTokenUrl = `${APP_URL}/login?token=${d.token}`;
+            const baseUrl = (import.meta as any).env.VITE_APP_URL || window.location.origin;
+            magicTokenUrl = `${baseUrl}/login?token=${d.token}`;
           }
         }
       } catch (e) { console.error("Error generating magic token", e); }
 
-      const user = getRegularUsers().find(u => u.id === userId);
-      if((smtpSettings.tplPassword || "") && user) {
-        const loginUrl = magicTokenUrl || `${APP_URL}/login`;
-        const body = (smtpSettings.tplPassword || "")
-          .replace(/{{name}}/g, user.firstName || "")
+      const user = getRegularUsers().find((u: any) => u.id === userId);
+      if (smtpSettings.tplPassword && user) {
+        const baseUrl = (import.meta as any).env.VITE_APP_URL || window.location.origin;
+        const loginUrl = magicTokenUrl || `${baseUrl}/login`;
+        const body = smtpSettings.tplPassword
+          .replace(/{{name}}/g, user.firstName)
           .replace(/{{password}}/g, newPass)
           .replace(/{{url}}/g, loginUrl);
         sendEmail(user.email, "Restablecimiento de contraseña", body);
@@ -236,7 +252,7 @@ export default function AdminDashboard() {
   const toggleModalAgency = (agency: string) => {
     setEditAgenciesModal(prev => ({
       ...prev,
-      selected: prev.selected.includes(agency) 
+      selected: prev.selected.includes(agency)
         ? prev.selected.filter(a => a !== agency)
         : [...prev.selected, agency]
     }));
@@ -253,10 +269,10 @@ export default function AdminDashboard() {
   const renderAssignmentModal = () => {
     if (!assignmentModal.isOpen) return null;
 
-    const filteredUsers = getRegularUsers().filter(u => {
+    const filteredUsers = getRegularUsers().filter((u: any) => {
       const query = searchQuery.toLowerCase();
       const fullName = `${u.firstName} ${u.lastName}`.toLowerCase();
-      const agencyMatch = u.agencies && u.agencies.some((ag: string) => ag.toLowerCase().includes(query));
+      const agencyMatch = u.agencies && u.agencies.some((ag: any) => ag.toLowerCase().includes(query));
       return fullName.includes(query) || u.email.toLowerCase().includes(query) || (u.agency && u.agency.toLowerCase().includes(query)) || agencyMatch;
     });
 
@@ -265,7 +281,7 @@ export default function AdminDashboard() {
         <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
           <h3 className="text-xl font-bold mb-2 text-gray-900">Asignar Acceso</h3>
           <p className="text-sm text-gray-600 mb-4 pb-4 border-b border-gray-100">
-            Selecciona a qué usuario se le otorgará acceso a <br/>
+            Selecciona a qué usuario se le otorgará acceso a <br />
             <strong>{assignmentModal.title}</strong>
           </p>
 
@@ -285,15 +301,15 @@ export default function AdminDashboard() {
             ) : filteredUsers.length === 0 ? (
               <p className="text-sm text-gray-500 italic py-2 text-center">No se encontraron usuarios que coincidan con la búsqueda.</p>
             ) : (
-              filteredUsers.map(user => {
+              filteredUsers.map((user: any) => {
                 let hasAccess = false;
                 if (assignmentModal.type === 'area') {
                   hasAccess = user.permissions?.areas?.includes(assignmentModal.areaId) || false;
                 } else {
                   hasAccess = user.permissions?.dashboards?.includes(`${assignmentModal.areaId}/${assignmentModal.dashboardId}`) ||
-                              user.permissions?.areas?.includes(assignmentModal.areaId) || false;
+                    user.permissions?.areas?.includes(assignmentModal.areaId) || false;
                 }
-                
+
                 return (
                   <div key={user.id} className="flex items-center justify-between p-3 border border-gray-100 rounded-lg hover:bg-gray-50">
                     <div>
@@ -308,14 +324,14 @@ export default function AdminDashboard() {
                           } else if (assignmentModal.dashboardId) {
                             removeUserFromDashboard(user.id, assignmentModal.areaId, assignmentModal.dashboardId);
                           }
-                          setAssignmentModal({...assignmentModal, isOpen: false});
+                          setAssignmentModal({ ...assignmentModal, isOpen: false });
                         }}
                         className="text-xs bg-red-100 hover:bg-red-200 text-red-700 px-3 py-1.5 rounded transition"
                       >
                         Quitar Acceso
                       </button>
                     ) : (
-                      <button 
+                      <button
                         onClick={() => submitAssignment(user.id)}
                         className="text-xs bg-[#E85D5D] hover:bg-[#DC2626] text-white px-3 py-1.5 rounded transition"
                       >
@@ -329,8 +345,8 @@ export default function AdminDashboard() {
           </div>
 
           <div className="flex justify-end gap-3 pt-4 border-t border-gray-100">
-            <button 
-              onClick={() => setAssignmentModal({...assignmentModal, isOpen: false})}
+            <button
+              onClick={() => setAssignmentModal({ ...assignmentModal, isOpen: false })}
               className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg text-sm transition"
             >
               Cerrar
@@ -366,13 +382,13 @@ export default function AdminDashboard() {
           </div>
 
           <div className="flex justify-end gap-3 pt-4 border-t border-gray-100">
-            <button 
-              onClick={() => setEditAgenciesModal({...editAgenciesModal, isOpen: false})}
+            <button
+              onClick={() => setEditAgenciesModal({ ...editAgenciesModal, isOpen: false })}
               className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg text-sm transition"
             >
               Cancelar
             </button>
-            <button 
+            <button
               onClick={submitEditAgencies}
               className="px-4 py-2 bg-[#E85D5D] hover:bg-[#DC2626] text-white rounded-lg text-sm transition"
             >
@@ -393,15 +409,15 @@ export default function AdminDashboard() {
 
   const formatDateShort = (dateString?: string) => {
     if (!dateString) return null;
-    return new Date(dateString).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short'});
+    return new Date(dateString).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' });
   };
 
   return (
     <div className="flex h-screen bg-gray-50 flex-col">
       <Header />
-      
+
       <main className="flex-1 overflow-y-auto p-6 flex flex-col gap-6">
-        
+
         {/* Fila principal: Zonas/Dashboards y Creación */}
         <div className="flex flex-col lg:flex-row gap-6">
           {/* Lado izquierdo: Zonas y Dashboards */}
@@ -417,29 +433,29 @@ export default function AdminDashboard() {
                 <ShieldCheck className="w-5 h-5 text-gray-400" /> Vista Administrador Total
               </div>
             </div>
-            
+
             <div className="space-y-4">
               {INITIAL_AREAS.map(area => {
                 const isExpanded = expandedAreas.includes(area);
                 const dashboards = systemDashboards[area] || [];
-                
+
                 return (
                   <div key={area} className="border border-gray-200 rounded-lg overflow-hidden">
-                    
+
                     {/* Fila del Área */}
                     <div className="bg-gray-50 px-4 py-3 flex items-center justify-between hover:bg-gray-100 transition">
-                      <button 
-                        onClick={() => toggleArea(area)} 
+                      <button
+                        onClick={() => toggleArea(area)}
                         className="flex items-center gap-2 font-semibold text-gray-800 flex-1 text-left"
                       >
-                        {isExpanded ? <ChevronDown className="w-5 h-5 text-gray-500" /> : <ChevronRight className="w-5 h-5 text-gray-500"/>}
+                        {isExpanded ? <ChevronDown className="w-5 h-5 text-gray-500" /> : <ChevronRight className="w-5 h-5 text-gray-500" />}
                         {AREA_NAMES[area]}
                         <span className="text-xs bg-gray-200 text-gray-600 px-2 py-0.5 rounded-full ml-2">
                           {dashboards.length} dashboards
                         </span>
                       </button>
-                      
-                      <button 
+
+                      <button
                         onClick={() => handleAssignClick('area', area, undefined, `Área: ${AREA_NAMES[area]}`)}
                         className="flex items-center justify-center p-2 rounded-full hover:bg-gray-200 text-gray-600 transition"
                         title="Asignar permisos al área"
@@ -454,7 +470,7 @@ export default function AdminDashboard() {
                         {dashboards.length === 0 ? (
                           <div className="p-4 text-sm text-gray-500 pl-11">No hay dashboards.</div>
                         ) : (
-                          dashboards.map(dashboard => (
+                          dashboards.map((dashboard: any) => (
                             <div key={dashboard.id} className="px-4 py-3 flex items-center justify-between pl-11 hover:bg-red-50/30 transition">
                               <div className="flex items-center gap-2 text-sm text-gray-700">
                                 <Shield className="w-4 h-4 text-indigo-400" />
@@ -471,14 +487,14 @@ export default function AdminDashboard() {
                                   {dashboard.hidden ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                                 </button>
                                 <button
-                                  onClick={() => { if(window.confirm("¿Archivar este dashboard?")) archiveDashboard(area, dashboard.id); }}
+                                  onClick={() => { if (window.confirm("¿Archivar este dashboard?")) archiveDashboard(area, dashboard.id); }}
                                   className="p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition"
                                   title="Archivar"
                                 >
                                   <Archive className="w-4 h-4" />
                                 </button>
                                 <button
-                                  onClick={() => { if(window.confirm("¿Eliminar este dashboard permanentemente?")) deleteSystemDashboard(area, dashboard.id); }}
+                                  onClick={() => { if (window.confirm("¿Eliminar este dashboard permanentemente?")) deleteSystemDashboard(area, dashboard.id); }}
                                   className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition"
                                   title="Eliminar"
                                 >
@@ -502,6 +518,52 @@ export default function AdminDashboard() {
               })}
             </div>
 
+            {/* Published Queue */}
+            {publishedDashboards.length > 0 && (
+              <div className="mt-8 pt-8 border-t border-gray-200">
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="w-2 h-2 bg-amber-500 rounded-full animate-pulse" />
+                  <h3 className="text-lg font-bold text-gray-900">Lienzos Pendientes de Aprobación</h3>
+                  <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-bold">{publishedDashboards.length}</span>
+                </div>
+                <div className="space-y-3">
+                  {publishedDashboards.map((pub: any) => (
+                    <div key={pub.id} className="bg-white border-l-4 border-l-amber-400 border border-amber-100 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-gray-900">{pub.name || 'Dashboard sin nombre'}</span>
+                          <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-bold uppercase tracking-wide">⏳ PENDIENTE</span>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          Por: <strong>{pub.publishedBy || 'Desarrollador'}</strong>
+                          {pub.publishedAt && <> · {new Date(pub.publishedAt).toLocaleDateString('es-MX', { day: '2-digit', month: 'short', year: 'numeric' })}</>}
+                          {pub.components && <> · <span className="text-indigo-600 font-semibold">{pub.components.length} componente{pub.components.length !== 1 ? 's' : ''}</span></>}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            const reason = window.prompt(`Motivo de rechazo para "${pub.name || 'Dashboard'}":\n(Opcional, puede dejarse vacío)`);
+                            if (reason !== null) {
+                              rejectDashboard(pub.id, reason || undefined);
+                            }
+                          }}
+                          className="px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 border border-red-200 rounded-lg font-bold transition"
+                        >
+                          ✗ Rechazar
+                        </button>
+                        <button
+                          onClick={() => setApprovalModal({ isOpen: true, pubId: pub.id, dashName: pub.name, areaId: pub.area || '' })}
+                          className="px-4 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-sm transition"
+                        >
+                          ✓ Aprobar y Asignar
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Lado derecho: Creación de Usuarios */}
@@ -543,7 +605,7 @@ export default function AdminDashboard() {
               <tbody className="divide-y divide-gray-100">
                 {(() => {
                   const query = tableSearchQuery.toLowerCase();
-                  const filtered = getRegularUsers().filter(u => {
+                  const filtered = getRegularUsers().filter((u: any) => {
                     const fullName = `${u.firstName} ${u.lastName}`.toLowerCase();
                     const agencyMatch = u.agencies && u.agencies.some((ag: string) => ag.toLowerCase().includes(query));
                     return fullName.includes(query) || u.email.toLowerCase().includes(query) || (u.agency && u.agency.toLowerCase().includes(query)) || agencyMatch;
@@ -565,8 +627,8 @@ export default function AdminDashboard() {
                     );
                   }
 
-                  return filtered.map(u => {
-                    const fullName = `${u.firstName || ""} ${u.lastName || ""}`;
+                  return filtered.map((u: any) => {
+                    const fullName = `${u.firstName} ${u.lastName}`;
                     const active = isUserActive(u.lastActiveAt);
                     const agenciesList = (u.agencies || []).length > 0 ? u.agencies : (u.agency ? [u.agency] : []);
                     const limitAgencies = agenciesList.slice(0, 2);
@@ -595,7 +657,7 @@ export default function AdminDashboard() {
 
                         <td className="px-4 py-3">
                           <div className="flex flex-wrap gap-1">
-                            {limitAgencies.map((ag:string) => (
+                            {limitAgencies.map((ag: string) => (
                               <span key={ag} className="bg-gray-100 text-gray-600 text-xs px-2 py-0.5 rounded border border-gray-200">
                                 {ag.replace("INFINITI", "INF.")}
                               </span>
@@ -609,44 +671,44 @@ export default function AdminDashboard() {
                         </td>
 
                         <td className="px-4 py-3 font-medium text-gray-700">
-                           {u.lastDashboardViewed ? u.lastDashboardViewed : <span className="text-gray-400 font-normal italic">Ninguno</span>}
+                          {u.lastDashboardViewed ? u.lastDashboardViewed : <span className="text-gray-400 font-normal italic">Ninguno</span>}
                         </td>
 
                         <td className="px-4 py-3">
-                           {active ? (
+                          {active ? (
                             <span className="inline-flex items-center gap-1.5 text-xs font-semibold bg-green-100 text-green-700 px-2 py-1 rounded-full mb-1">
                               <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
                               Activo Ahora
                             </span>
-                           ) : (
+                          ) : (
                             <span className="inline-flex items-center gap-1.5 text-xs font-medium bg-gray-100 text-gray-600 px-2 py-1 rounded-full mb-1">
                               Sesión
                               <span className="text-gray-500 font-normal ml-1">
                                 {formatDateShort(u.lastLoginAt) || 'Nunca'}
                               </span>
                             </span>
-                           )}
-                           <div className="text-[10px] text-gray-400 mt-0.5">
-                             Previa: {formatDateShort(u.previousLoginAt) || 'Sin historial'}
-                           </div>
+                          )}
+                          <div className="text-[10px] text-gray-400 mt-0.5">
+                            Previa: {formatDateShort(u.previousLoginAt) || 'Sin historial'}
+                          </div>
                         </td>
 
                         <td className="px-4 py-3 flex justify-end gap-1">
-                          <button 
+                          <button
                             onClick={() => openEditAgencies(u.id, fullName, agenciesList)}
                             className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition"
                             title="Modificar Agencias"
                           >
                             <Building2 className="w-4 h-4" />
                           </button>
-                          <button 
+                          <button
                             onClick={() => handleResetPassword(u.id, fullName)}
                             className="p-1.5 text-gray-400 hover:text-[#E85D5D] hover:bg-red-50 rounded-lg transition"
                             title="Modificar Contraseña"
                           >
                             <KeyRound className="w-4 h-4" />
                           </button>
-                          <button 
+                          <button
                             onClick={() => handleDeleteUser(u.id, fullName)}
                             className="p-1.5 text-gray-400 hover:text-[#E85D5D] hover:bg-red-50 rounded-lg transition"
                             title="Eliminar Cuenta"
@@ -682,7 +744,7 @@ export default function AdminDashboard() {
                 type="text"
                 placeholder="ej: smtp.gmail.com"
                 value={localSmtp?.host || ""}
-                onChange={(e) => setLocalSmtp({...localSmtp, host: e.target.value})}
+                onChange={(e) => setLocalSmtp({ ...localSmtp, host: e.target.value })}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-[#E85D5D] focus:border-[#E85D5D]"
                 required
               />
@@ -693,7 +755,7 @@ export default function AdminDashboard() {
                 type="number"
                 placeholder="587 o 465"
                 value={localSmtp?.port || ""}
-                onChange={(e) => setLocalSmtp({...localSmtp, port: Number(e.target.value)})}
+                onChange={(e) => setLocalSmtp({ ...localSmtp, port: Number(e.target.value) })}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-[#E85D5D] focus:border-[#E85D5D]"
                 required
               />
@@ -704,7 +766,7 @@ export default function AdminDashboard() {
                 type="text"
                 placeholder="ATR Analytics"
                 value={localSmtp?.fromName || ""}
-                onChange={(e) => setLocalSmtp({...localSmtp, fromName: e.target.value})}
+                onChange={(e) => setLocalSmtp({ ...localSmtp, fromName: e.target.value })}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-[#E85D5D] focus:border-[#E85D5D]"
                 required
               />
@@ -715,7 +777,7 @@ export default function AdminDashboard() {
                 type="email"
                 placeholder="Reportes@..."
                 value={localSmtp?.user || ""}
-                onChange={(e) => setLocalSmtp({...localSmtp, user: e.target.value})}
+                onChange={(e) => setLocalSmtp({ ...localSmtp, user: e.target.value })}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-[#E85D5D] focus:border-[#E85D5D]"
                 required
               />
@@ -726,12 +788,12 @@ export default function AdminDashboard() {
                 type="password"
                 placeholder="********"
                 value={localSmtp?.password || ""}
-                onChange={(e) => setLocalSmtp({...localSmtp, password: e.target.value})}
+                onChange={(e) => setLocalSmtp({ ...localSmtp, password: e.target.value })}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-[#E85D5D] focus:border-[#E85D5D]"
                 required
               />
             </div>
-            
+
             <div className="lg:col-span-3 mt-4 border-t border-gray-100 pt-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4">Plantillas de Correo Electrónico</h3>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -740,7 +802,7 @@ export default function AdminDashboard() {
                   <textarea
                     rows={4}
                     value={localSmtp?.tplWelcome || ""}
-                    onChange={(e) => setLocalSmtp({...localSmtp, tplWelcome: e.target.value})}
+                    onChange={(e) => setLocalSmtp({ ...localSmtp, tplWelcome: e.target.value })}
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-[#E85D5D] focus:border-[#E85D5D]"
                     placeholder="Escribe el mensaje..."
                   />
@@ -751,7 +813,7 @@ export default function AdminDashboard() {
                   <textarea
                     rows={4}
                     value={localSmtp?.tplArea || ""}
-                    onChange={(e) => setLocalSmtp({...localSmtp, tplArea: e.target.value})}
+                    onChange={(e) => setLocalSmtp({ ...localSmtp, tplArea: e.target.value })}
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-[#E85D5D] focus:border-[#E85D5D]"
                   />
                   <p className="text-xs text-gray-500 mt-1">Variables: <code className="bg-gray-100 px-1 rounded">{'{{name}}'}</code>, <code className="bg-gray-100 px-1 rounded">{'{{area}}'}</code></p>
@@ -761,7 +823,7 @@ export default function AdminDashboard() {
                   <textarea
                     rows={4}
                     value={localSmtp?.tplDashboard || ""}
-                    onChange={(e) => setLocalSmtp({...localSmtp, tplDashboard: e.target.value})}
+                    onChange={(e) => setLocalSmtp({ ...localSmtp, tplDashboard: e.target.value })}
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-[#E85D5D] focus:border-[#E85D5D]"
                   />
                   <p className="text-xs text-gray-500 mt-1">Variables: <code className="bg-gray-100 px-1 rounded">{'{{name}}'}</code>, <code className="bg-gray-100 px-1 rounded">{'{{area}}'}</code>, <code className="bg-gray-100 px-1 rounded">{'{{dashboard}}'}</code></p>
@@ -771,7 +833,7 @@ export default function AdminDashboard() {
                   <textarea
                     rows={4}
                     value={localSmtp?.tplPassword || ""}
-                    onChange={(e) => setLocalSmtp({...localSmtp, tplPassword: e.target.value})}
+                    onChange={(e) => setLocalSmtp({ ...localSmtp, tplPassword: e.target.value })}
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-[#E85D5D] focus:border-[#E85D5D]"
                   />
                   <p className="text-xs text-gray-500 mt-1">Variables: <code className="bg-gray-100 px-1 rounded">{'{{name}}'}</code>, <code className="bg-gray-100 px-1 rounded">{'{{password}}'}</code>, <code className="bg-gray-100 px-1 rounded">{'{{url}}'}</code></p>
@@ -780,7 +842,7 @@ export default function AdminDashboard() {
             </div>
 
             <div className="lg:col-span-3 flex justify-end">
-              <button 
+              <button
                 type="submit"
                 className="flex items-center gap-2 bg-gray-900 hover:bg-gray-800 text-white px-5 py-2 rounded-lg text-sm font-medium transition"
               >
@@ -809,15 +871,14 @@ export default function AdminDashboard() {
             <p className="text-sm text-gray-600 mb-6">
               ¿En qué área deseas publicar <strong>{approvalModal.dashName}</strong>?
             </p>
-            
+
             <div className="space-y-2 mb-6">
               {INITIAL_AREAS.map(areaId => (
                 <button
                   key={areaId}
-                  onClick={() => setApprovalModal({...approvalModal, areaId})}
-                  className={`w-full text-left px-4 py-2 rounded-lg border transition ${
-                    approvalModal.areaId === areaId ? 'border-indigo-500 bg-indigo-50 text-indigo-700 font-bold' : 'border-gray-200 hover:bg-gray-50'
-                  }`}
+                  onClick={() => setApprovalModal({ ...approvalModal, areaId })}
+                  className={`w-full text-left px-4 py-2 rounded-lg border transition ${approvalModal.areaId === areaId ? 'border-indigo-500 bg-indigo-50 text-indigo-700 font-bold' : 'border-gray-200 hover:bg-gray-50'
+                    }`}
                 >
                   {AREA_NAMES[areaId]}
                 </button>
@@ -825,13 +886,13 @@ export default function AdminDashboard() {
             </div>
 
             <div className="flex justify-end gap-3 pt-4 border-t border-gray-100">
-              <button 
-                onClick={() => setApprovalModal({...approvalModal, isOpen: false})}
+              <button
+                onClick={() => setApprovalModal({ ...approvalModal, isOpen: false })}
                 className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg text-sm"
               >
                 Cancelar
               </button>
-              <button 
+              <button
                 disabled={!approvalModal.areaId}
                 onClick={() => handleApprove(approvalModal.pubId, approvalModal.areaId)}
                 className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold disabled:opacity-50"

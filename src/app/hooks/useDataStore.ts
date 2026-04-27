@@ -177,8 +177,27 @@ const fetchAllDataFromBackend = async () => {
     internal_sources = devAssets.sources || [];
     internal_measures = devAssets.measures || [];
     internal_canvas = devAssets.canvas || [];
-    internal_published = devAssets.publishedDashboards || [];
-    internal_system = devAssets.systemDashboards || devAssets.system || INITIAL_DASHBOARDS_MAP;
+    internal_published = devAssets.published || [];
+
+    // Merge DB system dashboards with defaults (DB takes precedence or overwrites completely if populated)
+    if (Object.keys(devAssets.system || {}).length > 0) {
+      internal_system = devAssets.system;
+    }
+
+    // Prune rows before saving to localStorage to stay within 5MB quota
+    const liteSources = internal_sources.map((s: any) => ({ ...s, rows: [] }));
+    const liteMeasures = internal_measures.map((m: any) => ({ ...m, rows: [] }));
+    const liteCanvas = internal_canvas.map((c: any) => ({ ...c, rows: [] }));
+
+    try {
+      localStorage.setItem("atr_dev_sources", JSON.stringify(liteSources));
+      localStorage.setItem("atr_dev_measures", JSON.stringify(liteMeasures));
+      localStorage.setItem("atr_dev_canvas", JSON.stringify(liteCanvas));
+      localStorage.setItem("atr_published_dashboards", JSON.stringify(internal_published));
+      localStorage.setItem("atr_system_dashboards", JSON.stringify(internal_system));
+    } catch (e) {
+      console.warn("Storage quota exceeded, could not persist all dev assets to LocalStorage.", e);
+    }
   }
   const draftsData = await fetchFromBackend("/api/dev/drafts");
   if (draftsData && draftsData.drafts) {
@@ -556,6 +575,70 @@ export const useDataStore = () => {
     },
     // We removed deletePublishedDashboard and approveDashboard as the old /published flow is dead.
     systemDashboards: internal_system,
+    approveDashboard: (pubId: string, areaId: string) => {
+      const dash = internal_published.find(d => d.id === pubId);
+      if (!dash) return;
+      const newDash = { id: `dash-${Date.now()}`, title: dash.name, category: AREA_NAMES[areaId], config: dash };
+
+      internal_system = { ...internal_system, [areaId]: [...(internal_system[areaId] || []), newDash] };
+      internal_published = internal_published.filter(p => p.id !== pubId);
+
+      persist("atr_system_dashboards", internal_system);
+      persist("atr_published_dashboards", internal_published);
+
+      persistBackend('/api/dev/system', 'POST', { areaId, dashId: newDash.id, dashboard: newDash });
+      
+      // Also delete from published (pending) queue in backend
+      persistBackend(`/api/dev/published/${pubId}`, 'DELETE');
+      
+      // TRIGGER HARVESTING: Register ONLY new (non-marketplace) widgets in the marketplace
+      if (dash.components && Array.isArray(dash.components)) {
+        const newComponents = dash.components.filter((c: any) => !c.isMarketplace);
+        if (newComponents.length > 0) {
+          persistBackend('/api/marketplace/harvest', 'POST', {
+            dashboardId: newDash.id,
+            dashboardName: newDash.title,
+            components: newComponents.map((c: any) => ({
+              name: c.name,
+              config: { code: c.code },
+              contract: { source: 'SQL_SERVER' },
+              execution: { 
+                engine: 'SQL_SERVER_DIRECT', 
+                rawQuery: c.query || '', 
+                dataSourceId: c.connectionId 
+              },
+              connection: c.connection
+            }))
+          });
+        }
+      }
+    },
+
+    rejectDashboard: async (pubId: string, reason?: string) => {
+      const dash = internal_published.find(d => d.id === pubId);
+      if (!dash) return;
+      
+      // Remove from published queue
+      internal_published = internal_published.filter(p => p.id !== pubId);
+      persist("atr_published_dashboards", internal_published);
+      
+      // Delete from backend published table
+      persistBackend(`/api/dev/published/${pubId}`, 'DELETE');
+      
+      // Send back as a draft so the dev can continue working on it
+      const draftId = dash.originalDraftId || `draft-rejected-${pubId}`;
+      persistBackend('/api/dev/drafts', 'POST', {
+        id: draftId,
+        name: `[RECHAZADO] ${dash.name || 'Dashboard'}`,
+        canvas: dash.components || [],
+        tabs: [],
+        connections: [],
+        rejectedAt: new Date().toISOString(),
+        rejectionReason: reason || 'Rechazado por el administrador',
+      });
+
+      notify();
+    },
     
     // Advanced Management
     hideDashboard: (areaId: string, dashId: string) => {

@@ -107,6 +107,43 @@ const mockHash = (str) => {
   return hash.toString(16);
 };
 
+// ── AES-256-GCM Credential Encryption (REQ-1.1) ──────────────────────────────
+const CRED_KEY = crypto.scryptSync(
+  process.env.CRED_SECRET || 'ATR_DataCanvas_SecretKey_2025!',
+  'atr_salt_v1',
+  32
+);
+
+function encryptCredential(text) {
+  if (!text) return '';
+  try {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', CRED_KEY, iv);
+    const encrypted = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return `enc:${iv.toString('hex')}:${tag.toString('hex')}:${encrypted.toString('hex')}`;
+  } catch (e) {
+    console.error('[encrypt]', e.message);
+    return text; // fallback if encryption fails
+  }
+}
+
+function decryptCredential(text) {
+  if (!text || !text.startsWith('enc:')) return text;
+  try {
+    const parts = text.split(':');
+    const iv = Buffer.from(parts[1], 'hex');
+    const tag = Buffer.from(parts[2], 'hex');
+    const encrypted = Buffer.from(parts[3], 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', CRED_KEY, iv);
+    decipher.setAuthTag(tag);
+    return decipher.update(encrypted) + decipher.final('utf8');
+  } catch (e) {
+    console.error('[decrypt]', e.message);
+    return text; // fallback
+  }
+}
+
 async function ensureSysConnection() {
   if (sysPool.connected) return sysPool;
   if (sysPool.connecting) {
@@ -450,10 +487,139 @@ app.post('/api/dev/canvas', requireToken, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/marketplace/submit', requireToken, async (req, res) => {
-  const { dashboardId, title, category, components } = req.body;
-  if (!components || !Array.isArray(components)) {
-    return res.status(400).json({ error: 'No components provided' });
+app.post('/api/dev/published', requireToken, async (req, res) => {
+  try {
+    const pool = await ensureSysConnection();
+    await pool.request()
+      .input('id', sql.VarChar, req.body.id)
+      .input('data', sql.NVarChar, JSON.stringify(req.body))
+      .query(`
+        IF EXISTS (SELECT * FROM PublishedDashboards WHERE id = @id)
+          UPDATE PublishedDashboards SET data = @data WHERE id = @id
+        ELSE
+          INSERT INTO PublishedDashboards (id, data) VALUES (@id, @data)
+      `);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/dev/published/check-name — REQ-1.4: Unique name validation
+app.get('/api/dev/published/check-name', requireToken, async (req, res) => {
+  const { name } = req.query;
+  if (!name) return res.status(400).json({ error: 'Missing name' });
+  try {
+    const pool = await ensureSysConnection();
+    // Check published dashboards
+    const pub = await pool.request()
+      .input('name', sql.NVarChar, name)
+      .query(`SELECT COUNT(*) as cnt FROM PublishedDashboards WHERE JSON_VALUE(data, '$.name') = @name`);
+    // Check marketplace widgets
+    const mkt = await pool.request()
+      .input('name', sql.NVarChar, name)
+      .query(`SELECT COUNT(*) as cnt FROM Marketplace_Widgets WHERE name = @name AND isDeleted = 0`);
+    const exists = pub.recordset[0].cnt > 0 || mkt.recordset[0].cnt > 0;
+    res.json({ success: true, exists });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/dev/published/reject/:id — REQ-2.4: Reject and send back to drafts
+app.post('/api/dev/published/reject/:id', requireToken, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { reason } = req.body;
+  try {
+    const pool = await ensureSysConnection();
+    const pub = await pool.request()
+      .input('id', sql.VarChar, id)
+      .query('SELECT data FROM PublishedDashboards WHERE id = @id');
+    if (!pub.recordset[0]) return res.status(404).json({ error: 'Dashboard not found' });
+    
+    const dash = JSON.parse(pub.recordset[0].data);
+    const draftId = dash.originalDraftId || `draft-rejected-${id}`;
+    const updatedAt = new Date().toISOString();
+    
+    // Save back as draft
+    await pool.request()
+      .input('id', sql.VarChar(100), draftId)
+      .input('authorId', sql.VarChar(100), dash.authorId || req.session.userId)
+      .input('authorName', sql.NVarChar(200), dash.publishedBy || 'Dev')
+      .input('name', sql.NVarChar(500), `[RECHAZADO] ${dash.name || 'Dashboard'}`)
+      .input('updatedAt', sql.NVarChar(50), updatedAt)
+      .input('data', sql.NVarChar(sql.MAX), JSON.stringify({
+        canvas: dash.components || [],
+        tabs: [],
+        connections: [],
+        rejectedAt: updatedAt,
+        rejectionReason: reason || 'Rechazado por el administrador'
+      }))
+      .query(`
+        IF EXISTS (SELECT * FROM DevDrafts WHERE id = @id)
+          UPDATE DevDrafts SET name=@name, updatedAt=@updatedAt, data=@data WHERE id=@id
+        ELSE
+          INSERT INTO DevDrafts (id, authorId, authorName, name, updatedAt, data)
+          VALUES (@id, @authorId, @authorName, @name, @updatedAt, @data)
+      `);
+    
+    // Remove from published queue
+    await pool.request()
+      .input('id', sql.VarChar, id)
+      .query('DELETE FROM PublishedDashboards WHERE id = @id');
+    
+    console.log(`✅ Dashboard "${dash.name}" rechazado y enviado a borradores.`);
+    res.json({ success: true, draftId });
+  } catch (err) {
+    console.error('[/api/dev/published/reject]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/dev/published/:id', requireToken, async (req, res) => {
+  try {
+    await sysPool.request()
+      .input('id', sql.VarChar, req.params.id)
+      .query('DELETE FROM PublishedDashboards WHERE id = @id');
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/dev/system', requireToken, async (req, res) => {
+  const { areaId, dashId, dashboard } = req.body;
+  try {
+    await sysPool.request()
+      .input('areaId', sql.VarChar, areaId)
+      .input('dashId', sql.VarChar, dashId)
+      .input('data', sql.NVarChar, JSON.stringify(dashboard))
+      .query(`
+        IF EXISTS (SELECT * FROM SystemDashboards WHERE areaId = @areaId AND dashId = @dashId)
+          UPDATE SystemDashboards SET data = @data WHERE areaId = @areaId AND dashId = @dashId
+        ELSE
+          INSERT INTO SystemDashboards (areaId, dashId, data) VALUES (@areaId, @dashId, @data)
+      `);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/dev/system/:areaId/:dashId', requireToken, async (req, res) => {
+  try {
+    await sysPool.request()
+      .input('areaId', sql.VarChar, req.params.areaId)
+      .input('dashId', sql.VarChar, req.params.dashId)
+      .query('DELETE FROM SystemDashboards WHERE areaId = @areaId AND dashId = @dashId');
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Dev Drafts (Borradores Colaborativos) ─────────────────────────────────────
+
+// GET /api/dev/drafts — returns all drafts (visible to all devs)
+app.get('/api/dev/drafts', requireToken, async (req, res) => {
+  try {
+    const result = await sysPool.request().query(
+      'SELECT id, authorId, authorName, name, updatedAt FROM DevDrafts ORDER BY updatedAt DESC'
+    );
+    res.json({ success: true, drafts: result.recordset });
+  } catch (err) {
+    console.error('[/api/dev/drafts GET]', err.message);
+    res.status(500).json({ error: err.message });
   }
 
   const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -502,23 +668,71 @@ app.get('/api/marketplace/list', requireToken, async (req, res) => {
   const { tipo, search, scope } = req.query;
 
   try {
-    let query = `
-      SELECT Id, Nombre_Widget, Dashboard_Padre, Autor_User, Categoria, Es_Aprobado, Fecha_Creacion, Tipo_Visual, Config_JSON_Encrypted
-      FROM Marketplace_Dashboards
-      WHERE 1=1
-    `;
-    const request = sysPool.request();
+    console.log(`[MarketplaceQuery] Executing for DS: ${dataSourceId}, Version: ${versionId}`);
+    const ds = await getDataSource(dataSourceId);
+    if (!ds) {
+      console.error(`[MarketplaceQuery] DataSource NOT FOUND: ${dataSourceId}`);
+      return res.status(404).json({ error: `DataSource ${dataSourceId} not found in marketplace.` });
+    }
+    console.log(`[MarketplaceQuery] Found DS: ${ds.name} (${ds.host})`);
+
+    // Connection Broker: uses stored credentials (decrypted - REQ-1.1)
+    const creds = {
+      host: ds.host,
+      database: ds.databaseName,
+      username: ds.username,
+      password: decryptCredential(ds.password) // AES-256-GCM decrypt
+    };
+
+    const result = await withConnection(creds, async (pool) => {
+      console.log(`[MarketplaceQuery] Connection established, running query...`);
+      const request = pool.request();
+      
+      // Sanitization & Parameter Binding
+      // Parameters should be an array of { name, type, value }
+      if (parameters && Array.isArray(parameters)) {
+        parameters.forEach(p => {
+          const sqlType = sql[p.type] || sql.NVarChar;
+          request.input(p.name, sqlType, p.value);
+        });
+      }
+
+      // Execution Limit Protection
+      const MAX_ROWS = 25000; 
+      let rows = [];
+      let columns = [];
+      let cancelled = false;
+
+      request.stream = true;
+      request.query(queryTemplate);
 
     if (search) {
       query += ` AND (Nombre_Widget LIKE @search OR Dashboard_Padre LIKE @search)`;
       request.input('search', sql.NVarChar, `%${search}%`);
     }
-    if (tipo) {
-      query += ` AND Tipo_Visual = @tipo`;
-      request.input('tipo', sql.NVarChar, tipo);
-    }
-    if (scope === 'favoritos') {
-       // Logic for favorites could be joined here if you have a favorites table
+
+    res.json({
+      success: true,
+      columns: result.columns,
+      rows: result.rows,
+      partial: result.partial,
+      executionTime: Date.now() - startTime
+    });
+    console.log(`[MarketplaceQuery] SUCCESS: ${result.rows.length} rows in ${Date.now() - startTime}ms`);
+
+  } catch (err) {
+    console.error(`[MarketplaceQuery] ERROR executing query:`, err.message);
+    
+    // Log error telemetry
+    if (versionId) {
+      sysPool.request()
+        .input('vid', sql.UniqueIdentifier, versionId)
+        .input('uid', sql.VarChar, req.session.userId)
+        .input('msg', sql.NVarChar, err.message)
+        .query(`
+          INSERT INTO Widget_Telemetry (versionId, userId, errorFlag, errorMessage)
+          VALUES (@vid, @uid, 1, @msg)
+        `).catch(e => console.error('Error Telemetry Log Error:', e.message));
     }
 
     query += ` ORDER BY Fecha_Creacion DESC`;
@@ -597,31 +811,90 @@ app.get('/api/dev/columns/:connectionId', requireToken, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/dev/preview/:connectionId', requireToken, async (req, res) => {
-  const { connectionId } = req.params;
-  const { table } = req.query;
-  const startTime = Date.now();
+// POST /api/marketplace/harvest
+// Scans a dashboard's components and registers ONLY NEW (non-marketplace) items
+app.post('/api/marketplace/harvest', requireToken, async (req, res) => {
+  const { dashboardId, dashboardName, components } = req.body;
+  if (!components || !Array.isArray(components)) return res.status(400).json({ error: 'No components to harvest' });
+
   try {
-    const poolSys = await ensureSysConnection();
-    const dsRes = await poolSys.request().input('id', sql.VarChar, connectionId).query('SELECT * FROM Marketplace_DataSources WHERE id = @id');
-    const ds = dsRes.recordset[0];
-    const poolKey = `${ds.host}|${ds.databaseName}|${ds.username}`;
-    const entry = poolMap.get(poolKey);
-    let rows = [];
-    let tot = 0;
-    if (ds.provider === 'mysql') {
-       const [r] = await entry.pool.query(`SELECT * FROM \`${table}\` LIMIT 50000`);
-       rows = r;
-       const [cnt] = await entry.pool.query(`SELECT COUNT(*) as cnt FROM \`${table}\``);
-       tot = cnt[0].cnt;
-    } else {
-       const result = await entry.pool.request().query(`SELECT TOP 50000 * FROM [${table}]`);
-       rows = result.recordset;
-       const countResult = await entry.pool.request().query(`SELECT COUNT(*) as cnt FROM [${table}]`);
-       tot = countResult.recordset[0].cnt;
+    const pool = await ensureSysConnection();
+    let harvested = 0;
+    let skipped = 0;
+
+    for (const comp of components) {
+      // REQ-1.3: Skip widgets that came from marketplace (isMarketplace flag)
+      if (comp.isMarketplace) { skipped++; continue; }
+
+      // REQ-1.3: Dedup check — skip if widget with same name already exists for this origin
+      const existsCheck = await pool.request()
+        .input('name', sql.NVarChar, comp.name)
+        .input('origin', sql.VarChar, dashboardId)
+        .query('SELECT COUNT(*) as cnt FROM Marketplace_Widgets WHERE name = @name AND originId = @origin AND isDeleted = 0');
+      if (existsCheck.recordset[0].cnt > 0) { skipped++; continue; }
+
+      const widgetId = crypto.randomUUID();
+      const versionId = crypto.randomUUID();
+      
+      // Hash executionJSON for integrity checking
+      const execStr = JSON.stringify(comp.execution || {});
+      const execHash = crypto.createHash('sha256').update(execStr).digest('hex');
+
+      // REQ-1.1: Register data source with ENCRYPTED password
+      if (comp.connection) {
+        const { connectionId, name: dsName, host, databaseName, username, password } = comp.connection;
+        const encryptedPass = encryptCredential(password || '');
+        await pool.request()
+          .input('dsid', sql.VarChar, connectionId)
+          .input('dsname', sql.NVarChar, dsName || `DS ${connectionId}`)
+          .input('dshost', sql.NVarChar, host)
+          .input('dsdb', sql.NVarChar, databaseName)
+          .input('dsuser', sql.NVarChar, username)
+          .input('dspass', sql.NVarChar, encryptedPass) // ENCRYPTED
+          .input('dsowner', sql.VarChar, req.session.userId)
+          .query(`
+            IF NOT EXISTS (SELECT * FROM Marketplace_DataSources WHERE id = @dsid)
+              INSERT INTO Marketplace_DataSources (id, name, host, databaseName, username, password, owner)
+              VALUES (@dsid, @dsname, @dshost, @dsdb, @dsuser, @dspass, @dsowner)
+            ELSE
+              UPDATE Marketplace_DataSources SET password=@dspass WHERE id=@dsid
+          `);
+      }
+
+      console.log(`[Harvest] Registering widget: ${comp.name} from origin: ${dashboardId}`);
+      await pool.request()
+        .input('id', sql.UniqueIdentifier, widgetId)
+        .input('name', sql.NVarChar, comp.name || 'Componente Sin Nombre')
+        .input('owner', sql.VarChar, req.session.userId)
+        .input('origin', sql.VarChar, dashboardId)
+        .query(`
+          INSERT INTO Marketplace_Widgets (id, name, ownerId, originId)
+          VALUES (@id, @name, @owner, @origin)
+        `);
+
+      console.log(`[Harvest] Creating version with exec JSON: ${execStr.substring(0, 100)}...`);
+      await pool.request()
+        .input('vid', sql.UniqueIdentifier, versionId)
+        .input('wid', sql.UniqueIdentifier, widgetId)
+        .input('config', sql.NVarChar, JSON.stringify(comp.config || {}))
+        .input('contract', sql.NVarChar, JSON.stringify(comp.contract || {}))
+        .input('execution', sql.NVarChar, execStr)
+        .input('aid', sql.VarChar, req.session.userId)
+        .input('hash', sql.VarChar, execHash)
+        .query(`
+          INSERT INTO Marketplace_Widget_Versions (versionId, widgetId, versionTag, configJSON, contractJSON, executionJSON, authorId, hash)
+          VALUES (@vid, @wid, '1.0.0', @config, @contract, @execution, @aid, @hash)
+        `);
+      
+      harvested++;
     }
-    res.json({ success: true, columns: Object.keys(rows[0] || {}), rows, totalRows: tot, executionTime: Date.now() - startTime });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    
+    console.log(`✅ [Harvest] Dashboard "${dashboardName}" completed. Harvested: ${harvested}, Skipped: ${skipped}`);
+    res.json({ success: true, harvested, skipped });
+  } catch (err) {
+    console.error('[/api/marketplace/harvest]', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/dev/query', requireToken, async (req, res) => {
