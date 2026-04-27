@@ -47,6 +47,13 @@ if (typeof Chart === "undefined") throw new Error("No se encontró la función C
 return Chart;`
     );
 
+    // 3. Expose interaction handlers to the window for the sandbox
+    w.onFilterChange = (filter: any) => {
+      console.log("Cross-filter triggered:", filter);
+      // Dispatch custom event for the dashboard to listen
+      window.dispatchEvent(new CustomEvent('atr-cross-filter', { detail: filter }));
+    };
+
     const Component: React.ComponentType = factory(
       React,
       rows,

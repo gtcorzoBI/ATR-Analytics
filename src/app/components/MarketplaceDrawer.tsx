@@ -9,6 +9,7 @@ interface MarketplaceDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   onInject: (widget: any) => void;
+  onEdit?: (widget: any) => void;
 }
 
 const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#14b8a6', '#f59e0b'];
@@ -130,6 +131,9 @@ export default function MarketplaceDrawer({ isOpen, onClose, onInject }: Marketp
   const [activeTab, setActiveTab] = useState<'global' | 'favorites' | 'own'>('global');
   const [searchQuery, setSearchQuery] = useState("");
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
+
+  const [activeTab, setActiveTab] = useState<'all' | 'mine' | 'devs' | 'favorites'>('all');
+  const [selectedDev, setSelectedDev] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen) fetchWidgets();

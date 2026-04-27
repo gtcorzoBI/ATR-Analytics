@@ -46,6 +46,13 @@ export interface MarketplaceWidget {
   configJSON: string;
   contractJSON: string;
   executionJSON: string;
+  // Dynamic UI properties
+  isFavorite?: boolean;
+  isHidden?: boolean;
+  status?: 'pending' | 'approved' | 'rejected';
+  isJSX?: boolean;
+  ownerName?: string;
+  ownerEmail?: string;
 }
 
 export interface DataContract {

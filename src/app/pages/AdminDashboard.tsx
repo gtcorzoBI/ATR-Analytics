@@ -179,7 +179,7 @@ export default function AdminDashboard() {
       if (smtpSettings.tplArea && user) {
         const body = smtpSettings.tplArea
           .replace('{{name}}', user.firstName)
-          .replace('{{area}}', AREA_NAMES[assignmentModal.areaId]);
+          .replace('{{area}}', AREA_NAMES[assignmentModal.areaId] || assignmentModal.areaId);
         sendEmail(user.email, "Nueva área asignada", body);
       }
     } else if (assignmentModal.type === 'dashboard' && assignmentModal.dashboardId) {
@@ -188,8 +188,8 @@ export default function AdminDashboard() {
         const tpl = smtpSettings.tplDashboard || "";
         const body = tpl
           .replace('{{name}}', user.firstName)
-          .replace('{{area}}', AREA_NAMES[assignmentModal.areaId])
-          .replace('{{dashboard}}', assignmentModal.title);
+          .replace('{{area}}', AREA_NAMES[assignmentModal.areaId] || assignmentModal.areaId)
+          .replace('{{dashboard}}', assignmentModal.title || "");
         sendEmail(user.email, "Nuevo dashboard asignado", body);
       }
     }
@@ -630,7 +630,7 @@ export default function AdminDashboard() {
                   return filtered.map((u: any) => {
                     const fullName = `${u.firstName} ${u.lastName}`;
                     const active = isUserActive(u.lastActiveAt);
-                    const agenciesList = u.agencies && u.agencies.length > 0 ? u.agencies : (u.agency ? [u.agency] : []);
+                    const agenciesList = (u.agencies || []).length > 0 ? u.agencies : (u.agency ? [u.agency] : []);
                     const limitAgencies = agenciesList.slice(0, 2);
                     const extraAgencies = agenciesList.length - 2;
 
