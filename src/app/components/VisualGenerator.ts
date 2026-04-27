@@ -114,36 +114,67 @@ function Chart() {
       break;
 
     case 'pie':
-    case 'donut':
-      const pieCat = xAxis || getSlot('legend')[0]?.name;
-      const pieVal = values[0];
+    case 'donut': {
+      // Pie/Donut: Leyenda = categoría (agrupación), Valores = medida numérica
+      const legendSlot = getSlot('legend');
+      const pieCat = legendSlot[0]?.name || getSlot('details')[0]?.name;
+      const pieVal = getSlot('yAxis')[0] || getSlot('values')[0];
       if (!pieCat || !pieVal) {
-        content = `return <div style={{padding:20}}>Arrastra campos a Eje Y / Leyenda</div>;`;
+        content = `return <div style={{padding:20,textAlign:'center',color:'#64748b'}}><b>Pie / Donut</b><br/>Necesitas:<br/>• <b>Leyenda</b>: campo categórico (ej: Colateral)<br/>• <b>Valores</b>: medida numérica con agregación</div>;`;
         break;
       }
+      const pieAgg = pieVal.agg || 'sum';
+      const pieKeyClean = clean(pieVal.name);
+      const pieCatClean = clean(pieCat);
+      // Build pieData inline: group by category field, aggregate value
       content = `
-  const pieData = processedData;
+  const pieRaw = React.useMemo(() => {
+    const grouped = {};
+    data.forEach(row => {
+      const cat = String(row[${JSON.stringify(pieCat)}] ?? 'N/A');
+      const val = Number(row[${JSON.stringify(pieVal.name)}]) || 0;
+      if (!grouped[cat]) grouped[cat] = { sum: 0, count: 0, min: Infinity, max: -Infinity, vals: new Set() };
+      grouped[cat].sum += val;
+      grouped[cat].count++;
+      if (val < grouped[cat].min) grouped[cat].min = val;
+      if (val > grouped[cat].max) grouped[cat].max = val;
+      grouped[cat].vals.add(String(row[${JSON.stringify(pieVal.name)}]));
+    });
+    return Object.entries(grouped).map(([cat, acc]) => ({
+      ${JSON.stringify(pieCat)}: cat,
+      ${JSON.stringify(pieKeyClean)}: ${
+        pieAgg === 'avg' ? 'acc.count ? acc.sum / acc.count : 0' :
+        pieAgg === 'count' ? 'acc.count' :
+        pieAgg === 'distinct_count' ? 'acc.vals.size' :
+        pieAgg === 'max' ? '(acc.max === -Infinity ? 0 : acc.max)' :
+        pieAgg === 'min' ? '(acc.min === Infinity ? 0 : acc.min)' :
+        'acc.sum'
+      }
+    })).filter(d => d[${JSON.stringify(pieKeyClean)}] > 0).sort((a,b) => b[${JSON.stringify(pieKeyClean)}] - a[${JSON.stringify(pieKeyClean)}]);
+  }, [data]);
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
       <h2 style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>{${JSON.stringify(title)}}</h2>
       <ResponsiveContainer width="100%" height="100%" minHeight={250}>
         <PieChart>
-          <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: 8, color: '#f8fafc', fontSize: 12 }} />
+          <Tooltip formatter={(v) => new Intl.NumberFormat('en-US',{notation:'compact'}).format(v)} contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: 8, color: '#f8fafc', fontSize: 12 }} />
           <Legend wrapperStyle={{ fontSize: 11 }} />
           <Pie
-            data={pieData}
-            dataKey="${clean(pieVal.name)}"
-            nameKey="${pieCat}"
+            data={pieRaw}
+            dataKey={${JSON.stringify(pieKeyClean)}}
+            nameKey={${JSON.stringify(pieCat)}}
             cx="50%" cy="50%"
             innerRadius={${type === 'donut' ? 60 : 0}}
             outerRadius={80}
             paddingAngle={${type === 'donut' ? 5 : 0}}
-            label
+            label={({name, percent}) => percent > 0.03 ? name + ' ' + (percent*100).toFixed(1)+'%' : ''}
           >
-            {pieData.map((_, index) => <Cell key={"cell-"+index} fill={colors[index % colors.length]} />)}
+            {pieRaw.map((_, index) => <Cell key={"cell-"+index} fill={colors[index % colors.length]} />)}
           </Pie>
         </PieChart>
       </ResponsiveContainer>`;
+      break;
+    }
       break;
       
     case 'card':
@@ -237,29 +268,31 @@ function Chart() {
     }
 
     case 'matrix': {
-      const rowField = getSlot('rows')[0]?.name || getSlot('yAxis')[0]?.name;
+      // Matrix: supports MULTIPLE row fields (e.g. Sucursal + ID)
+      const rowFields = getSlot('rows').map(s => s.name);
+      if (rowFields.length === 0 && getSlot('yAxis')[0]) rowFields.push(getSlot('yAxis')[0].name);
       const colField = getSlot('cols')[0]?.name;
       const valItems = getSlot('values').length > 0 ? getSlot('values') : getSlot('yAxisSec');
       
-      if (!rowField || !colField || valItems.length === 0) {
+      if (rowFields.length === 0 || !colField || valItems.length === 0) {
         content = `return <div style={{padding:20,textAlign:'center',color:'#64748b',fontSize:12}}>
           <div style={{fontSize:14,fontWeight:700,marginBottom:10}}>&#x1F4CA; Matriz Din\u00e1mica</div>
           <div style={{textAlign:'left',lineHeight:1.8}}>
             Necesitas configurar:<br/>
-            \u2022 <b>Filas (Y)</b>: Campo de agrupaci\u00f3n vertical<br/>
+            \u2022 <b>Filas</b>: 1 o m\u00e1s campos categ\u00f3ricos (ej: Sucursal, ID)<br/>
             \u2022 <b>Columnas</b>: Campo de agrupaci\u00f3n horizontal<br/>
-            \u2022 <b>Valores</b>: 1 o m\u00e1s medidas (SUM, AVG, etc.)
+            \u2022 <b>Valores</b>: 1 o m\u00e1s medidas (SUM, AVG, COUNT, etc.)
           </div>
         </div>;`;
         break;
       }
 
       const valItemsJson = JSON.stringify(valItems.map(v => ({ name: v.name, agg: v.agg || 'sum', label: `${v.name} [${(v.agg||'sum').toUpperCase()}]` })));
-      const rf = JSON.stringify(rowField);
+      const rf = JSON.stringify(rowFields);   // now an ARRAY
       const cf = JSON.stringify(colField);
 
       content = `
-  const _rf = ${rf};
+  const _rfs = ${rf};  // array of row field names
   const _cf = ${cf};
   const _vi = ${valItemsJson};
   const _fmt = n => new Intl.NumberFormat('en-US', { notation: 'compact' }).format(n);
@@ -288,7 +321,8 @@ function Chart() {
     const colKeys = new Set();
     const map = {};
     data.forEach(d => {
-      const r = String(d[_rf] ?? 'N/A');
+      // Multi-row key: join all row fields with separator
+      const r = _rfs.map(rf => String(d[rf] ?? 'N/A')).join(' › ');
       const c = String(d[_cf] ?? 'N/A');
       rowKeys.add(r); colKeys.add(c);
       if (!map[r]) map[r] = {};
@@ -306,9 +340,11 @@ function Chart() {
     return { rows: Array.from(rowKeys).sort(), cols: Array.from(colKeys).sort(), map };
   }, [data]);
 
-  const rowTot = (r, vi) => pivot.cols.reduce((acc, c) => _merge(acc, map[r]?.[c]?.[vi.name] || _zero()), _zero());
+  const rowTot = (r, vi) => pivot.cols.reduce((acc, c) => _merge(acc, pivot.map[r]?.[c]?.[vi.name] || _zero()), _zero());
   const grandTot = (vi) => pivot.rows.reduce((acc, r) => _merge(acc, rowTot(r, vi)), _zero());
   const { map } = pivot;
+  // Header shows joined row field names
+  const _rowHeader = _rfs.join(' › ');
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -318,7 +354,7 @@ function Chart() {
           <thead style={{ position: 'sticky', top: 0, zIndex: 2 }}>
             <tr style={{ background: '#1e293b', color: '#e2e8f0' }}>
               <th rowSpan={_vi.length > 1 ? 2 : 1} style={{ padding: '8px 12px', textAlign: 'left', borderRight: '2px solid #334155', minWidth: 110 }}>
-                {_rf}
+                {_rowHeader}
               </th>
               {pivot.cols.map(c => (
                 <th key={c} colSpan={_vi.length} style={{ padding: '6px 10px', textAlign: 'center', borderRight: '1px solid #334155', borderBottom: _vi.length > 1 ? '1px solid #4b5563' : undefined }}>

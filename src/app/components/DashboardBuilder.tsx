@@ -14,6 +14,9 @@ interface SavedComponent {
   columns: string[];
   query?: string;
   connectionId?: string;
+  versionId?: string;
+  executionJSON?: string;
+  visualType?: string;
 }
 
 interface DashItem extends SavedComponent {
@@ -353,7 +356,7 @@ export default function DashboardBuilder({ components, connections, dark, onClos
                 
                 {/* The Chart (Full interactivity) */}
                 <div className="absolute inset-0">
-                  {item.query && item.connectionId ? (
+                  {item.isMarketplace || (item.query && item.connectionId) ? (
                     <InjectedWidget 
                       instanceId={item.instanceId}
                       widget={{
@@ -364,7 +367,9 @@ export default function DashboardBuilder({ components, connections, dark, onClos
                           rawQuery: item.query,
                           visualType: item.visualType || 'table',
                           code: item.code
-                        })
+                        }),
+                        // Ensure InjectedWidget can find the code in config if not in execution
+                        configJSON: JSON.stringify({ code: item.code })
                       }}
                       dark={dark} 
                     />

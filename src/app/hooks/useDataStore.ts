@@ -153,11 +153,11 @@ const fetchAllDataFromBackend = async () => {
     internal_sources = devAssets.sources || [];
     internal_measures = devAssets.measures || [];
     internal_canvas = devAssets.canvas || [];
-    internal_published = devAssets.publishedDashboards || [];
+    internal_published = devAssets.published || [];
 
     // Merge DB system dashboards with defaults (DB takes precedence or overwrites completely if populated)
-    if (Object.keys(devAssets.systemDashboards || {}).length > 0) {
-      internal_system = devAssets.systemDashboards;
+    if (Object.keys(devAssets.system || {}).length > 0) {
+      internal_system = devAssets.system;
     }
 
     // Prune rows before saving to localStorage to stay within 5MB quota
@@ -452,26 +452,53 @@ export const useDataStore = () => {
       // Also delete from published (pending) queue in backend
       persistBackend(`/api/dev/published/${pubId}`, 'DELETE');
       
-      // TRIGGER HARVESTING: Register widgets in the marketplace
+      // TRIGGER HARVESTING: Register ONLY new (non-marketplace) widgets in the marketplace
       if (dash.components && Array.isArray(dash.components)) {
-        persistBackend('/api/marketplace/harvest', 'POST', {
-          dashboardId: newDash.id,
-          dashboardName: newDash.title,
-          components: dash.components.map((c: any) => ({
-            name: c.name,
-            config: { code: c.code }, // UI logic
-            contract: { source: 'SQL_SERVER' }, // Data contract
-            execution: { 
-              engine: 'SQL_SERVER_DIRECT', 
-              rawQuery: c.query || '', 
-              dataSourceId: c.connectionId 
-            },
-            connection: c.connection // Includes host/db/user/pass for Marketplace registration
-          }))
-        });
+        const newComponents = dash.components.filter((c: any) => !c.isMarketplace);
+        if (newComponents.length > 0) {
+          persistBackend('/api/marketplace/harvest', 'POST', {
+            dashboardId: newDash.id,
+            dashboardName: newDash.title,
+            components: newComponents.map((c: any) => ({
+              name: c.name,
+              config: { code: c.code },
+              contract: { source: 'SQL_SERVER' },
+              execution: { 
+                engine: 'SQL_SERVER_DIRECT', 
+                rawQuery: c.query || '', 
+                dataSourceId: c.connectionId 
+              },
+              connection: c.connection
+            }))
+          });
+        }
       }
+    },
 
+    rejectDashboard: async (pubId: string, reason?: string) => {
+      const dash = internal_published.find(d => d.id === pubId);
+      if (!dash) return;
+      
+      // Remove from published queue
+      internal_published = internal_published.filter(p => p.id !== pubId);
+      persist("atr_published_dashboards", internal_published);
+      
+      // Delete from backend published table
       persistBackend(`/api/dev/published/${pubId}`, 'DELETE');
+      
+      // Send back as a draft so the dev can continue working on it
+      const draftId = dash.originalDraftId || `draft-rejected-${pubId}`;
+      persistBackend('/api/dev/drafts', 'POST', {
+        id: draftId,
+        name: `[RECHAZADO] ${dash.name || 'Dashboard'}`,
+        canvas: dash.components || [],
+        tabs: [],
+        connections: [],
+        rejectedAt: new Date().toISOString(),
+        rejectionReason: reason || 'Rechazado por el administrador',
+      });
+
+      notify();
     },
     
     // Advanced Management
