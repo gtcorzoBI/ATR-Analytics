@@ -579,12 +579,39 @@ export default function DevDashboard() {
   // ─────────────────────────────────────────────────────────────────────
   const { deleteDevMeasure } = useDataStore() as any;
 
-  const saveComponent = (tab: DataTab) => {
+  const saveComponent = async (tab: DataTab) => {
     const name = prompt("Nombre del componente:", tab.title);
-    if (!name) return;
+    if (!name?.trim()) return;
+
+    // ── Validar nombre localmente primero ────────────────────────────────
+    const existsLocally = (devMeasures || []).some((m: any) => m.name?.toLowerCase() === name.trim().toLowerCase());
+    if (existsLocally) {
+      alert(`⚠️ Ya tienes un componente guardado con el nombre "${name}". Elige un nombre diferente para mantener el Marketplace limpio.`);
+      return;
+    }
+
+    // ── Validar contra la base de datos (marketplace) ────────────────────
+    try {
+      const res = await fetch(`${API}/api/dev/published/check-name?name=${encodeURIComponent(name.trim())}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.exists) {
+          const overwrite = window.confirm(
+            `⚠️ Ya existe un widget en el Marketplace con el nombre "${name}".\n\nSi guardas con este nombre se creará un duplicado en el catálogo.\n\n¿Deseas usar un nombre diferente? (Cancelar = continuar de todas formas)`
+          );
+          if (overwrite) return; // User wants to pick a different name
+        }
+      }
+    } catch (e) {
+      // Backend unreachable — allow save but warn
+      console.warn('[saveComponent] Could not check name uniqueness', e);
+    }
+
     const comp = { 
       id: `comp-${Date.now()}`, 
-      name, 
+      name: name.trim(), 
       code: tab.code, 
       query: tab.query,
       connectionId: tab.connectionId,
@@ -593,6 +620,7 @@ export default function DevDashboard() {
     };
     saveDevMeasure(comp);
   };
+
 
   const addToDashboard = (comp: any) => {
     // Explicitly ensure the item has the necessary fields for InjectedWidget

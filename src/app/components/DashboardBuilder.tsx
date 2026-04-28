@@ -16,8 +16,10 @@ interface SavedComponent {
   connectionId?: string;
   versionId?: string;
   executionJSON?: string;
+  configJSON?: string;
   visualType?: string;
 }
+
 
 interface DashItem extends SavedComponent {
   instanceId: string;
@@ -52,13 +54,38 @@ export default function DashboardBuilder({ components, connections, dark, onClos
   // Handle Marketplace Injection
   const handleMarketplaceInject = (widget: any) => {
     const instanceId = `inst-mkt-${Date.now()}`;
+
+    // ── Extract code from configJSON safely ──────────────────────────────
+    let code = '';
+    try {
+      const cfg = typeof widget.configJSON === 'string'
+        ? JSON.parse(widget.configJSON)
+        : (widget.configJSON || {});
+      code = cfg.code || '';
+    } catch(e) {}
+
+    // Also try executionJSON as secondary source
+    if (!code) {
+      try {
+        const exec = typeof widget.executionJSON === 'string'
+          ? JSON.parse(widget.executionJSON)
+          : (widget.executionJSON || {});
+        code = exec.code || '';
+      } catch(e) {}
+    }
+
     const newItem: DashItem = {
       id: widget.id,
       instanceId,
       name: widget.name,
-      code: widget.configJSON ? JSON.parse(widget.configJSON).code : '',
+      code,                         // <-- persisted so DashboardDetail can use it
       versionId: widget.versionId,
-      executionJSON: widget.executionJSON,
+      executionJSON: typeof widget.executionJSON === 'string'
+        ? widget.executionJSON
+        : JSON.stringify(widget.executionJSON || {}),
+      configJSON: typeof widget.configJSON === 'string'
+        ? widget.configJSON
+        : JSON.stringify(widget.configJSON || {}),
       x: 20, y: 20, w: 480, h: 360,
       isMarketplace: true,
       rows: [],
@@ -197,14 +224,32 @@ export default function DashboardBuilder({ components, connections, dark, onClos
       const dashboard = {
         name: dashName,
         components: items.map(it => {
+          // ── Marketplace item: carry secure execution metadata ──────────
+          if (it.isMarketplace) {
+            return {
+              name: it.name,
+              instanceId: it.instanceId,
+              isMarketplace: true,
+              versionId: it.versionId || '',
+              executionJSON: it.executionJSON || '',
+              configJSON: it.configJSON || '',
+              code: it.code || '',
+              rows: [], columns: [],
+              x: it.x, y: it.y, w: it.w, h: it.h
+            };
+          }
+
+          // ── Local dev component: carry connection + code ───────────────
           const original = components.find(c => c.id === it.id);
-          const connDetails = connections.find(c => c.id === original?.connectionId);
+          const connDetails = connections.find(c => c.id === (original?.connectionId || it.connectionId));
           
           return { 
-            name: it.name, 
-            code: original?.code || it.code, 
-            query: original?.query || "",
-            connectionId: original?.connectionId || "",
+            name: it.name,
+            instanceId: it.instanceId,
+            isMarketplace: false,
+            code: original?.code || it.code || '', 
+            query: original?.query || it.query || '',
+            connectionId: original?.connectionId || it.connectionId || '',
             connection: connDetails ? {
               connectionId: connDetails.id,
               name: connDetails.name,
@@ -218,6 +263,7 @@ export default function DashboardBuilder({ components, connections, dark, onClos
             x: it.x, y: it.y, w: it.w, h: it.h 
           };
         }),
+
         publishedAt: new Date().toISOString(),
         publishedBy: "Desarrollador", 
       };

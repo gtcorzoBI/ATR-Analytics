@@ -17,6 +17,7 @@ import {
 } from "recharts";
 import { ArrowLeft, Download, Share2, RefreshCw, BarChart3 } from "lucide-react";
 import LiveWidget from "./LiveWidget";
+import InjectedWidget from "./InjectedWidget";
 
 // Generar datos aleatorios para gráfico de barras
 const generateBarData = () => {
@@ -148,6 +149,8 @@ export default function DashboardDetail({ dashboard, onBack }: DashboardDetailPr
           <div className="relative" style={{ minHeight: '1000px' }}>
             {config.components.map((comp: any, idx: number) => {
               const instanceId = comp.instanceId || `user-comp-${idx}`;
+              // Marketplace items need InjectedWidget (executes real SQL via backend)
+              const isMarketplace = !!(comp.isMarketplace || (comp.executionJSON && !comp.rows?.length));
               return (
                 <div
                   key={instanceId}
@@ -160,15 +163,32 @@ export default function DashboardDetail({ dashboard, onBack }: DashboardDetailPr
                   }}
                 >
                   <div style={{ height: comp.h }}>
-                    <LiveWidget 
-                      instanceId={instanceId}
-                      code={comp.code} 
-                      rows={comp.rows || []} 
-                      columns={comp.columns || []} 
-                      query={comp.query}
-                      connectionId={comp.connectionId}
-                      padding={20}
-                    />
+                    {isMarketplace ? (
+                      <InjectedWidget
+                        instanceId={instanceId}
+                        widget={{
+                          name: comp.name,
+                          versionId: comp.versionId || 'local-dev',
+                          executionJSON: comp.executionJSON || JSON.stringify({
+                            dataSourceId: comp.connectionId,
+                            rawQuery: comp.query,
+                            code: comp.code
+                          }),
+                          configJSON: comp.configJSON || JSON.stringify({ code: comp.code })
+                        }}
+                        dark={false}
+                      />
+                    ) : (
+                      <LiveWidget 
+                        instanceId={instanceId}
+                        code={comp.code} 
+                        rows={comp.rows || []} 
+                        columns={comp.columns || []} 
+                        query={comp.query}
+                        connectionId={comp.connectionId}
+                        padding={20}
+                      />
+                    )}
                   </div>
                 </div>
               );

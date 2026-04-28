@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Store, Heart, Plus, Search, X, User } from 'lucide-react';
 import { useMarketplaceStore } from '../hooks/useMarketplaceStore';
 import { useAuth } from '../context/AuthContext';
-import { ResponsiveContainer, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, CartesianGrid, XAxis, YAxis, Tooltip } from 'recharts';
+import { ResponsiveContainer, BarChart, Bar, LineChart, Line, AreaChart, Area, PieChart, Pie, Cell, ScatterChart, Scatter, CartesianGrid, XAxis, YAxis, Tooltip } from 'recharts';
 
 interface MarketplaceDrawerProps {
   isOpen: boolean;
@@ -11,117 +11,237 @@ interface MarketplaceDrawerProps {
   onInject: (widget: any) => void;
 }
 
-const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#14b8a6', '#f59e0b'];
+// ── Generic sample data (no months, pure abstract labels) ────────────
+const SAMPLE_CAT  = ['A','B','C','D','E','F'];
+const SAMPLE_VALS = [42, 78, 31, 95, 57, 83];
 
-const generateMockData = (type: string) => {
-  if (type === 'pie' || type === 'donut') {
-    return [
-      { name: 'Cat A', value: 400 },
-      { name: 'Cat B', value: 300 },
-      { name: 'Cat C', value: 200 },
-    ];
+function buildMockData(visualType: string) {
+  if (visualType === 'pie' || visualType === 'donut') {
+    return SAMPLE_CAT.slice(0,4).map((n, i) => ({ name: n, value: SAMPLE_VALS[i] }));
   }
-  return [
-    { name: 'Ene', value: 2400 },
-    { name: 'Feb', value: 1398 },
-    { name: 'Mar', value: 9800 },
-    { name: 'Abr', value: 3908 },
-    { name: 'May', value: 4800 },
-  ];
+  if (visualType === 'scatter') {
+    return SAMPLE_CAT.map((n, i) => ({ name: n, x: SAMPLE_VALS[i], y: SAMPLE_VALS[(i+2)%6] }));
+  }
+  // bar, line, area, combo, etc.
+  return SAMPLE_CAT.map((n, i) => ({ name: n, S1: SAMPLE_VALS[i], S2: SAMPLE_VALS[(i+3)%6] }));
+}
+
+// Icon badge per visual type
+const TYPE_ICON_MAP: Record<string, string> = {
+  bar: '▊', 'bar-stacked': '▊', 'bar-h': '▬', line: '╱', area: '◸',
+  pie: '◉', donut: '◎', combo: '▊╱', scatter: '⬡', card: '🃏',
+  kpi: '📈', matrix: '⊞', table: '⊟', treemap: '⊠', slicer: '⊛'
 };
 
+const CHART_COLORS = ['#6366f1','#8b5cf6','#ec4899','#14b8a6','#f59e0b'];
+
+function ChartPreviewMini({ visualType, widgetId }: { visualType: string; widgetId: string }) {
+  const d = buildMockData(visualType);
+  const id = `mp-${widgetId}`;
+  const cs = { borderRadius: 8, border: 'none', fontSize: 10 };
+
+  if (visualType === 'pie' || visualType === 'donut') {
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <PieChart>
+          <Pie data={d} cx="50%" cy="50%"
+            innerRadius={visualType === 'donut' ? 38 : 0} outerRadius={62}
+            dataKey="value" nameKey="name" stroke="none" id={id}>
+            {d.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+          </Pie>
+          <Tooltip contentStyle={cs} />
+        </PieChart>
+      </ResponsiveContainer>
+    );
+  }
+  if (visualType === 'line' || visualType === 'area') {
+    const Comp = visualType === 'area' ? AreaChart : LineChart;
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <Comp data={d}>
+          <CartesianGrid strokeDasharray="3 3" opacity={0.2} vertical={false} />
+          <XAxis dataKey="name" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} />
+          <YAxis tick={{ fontSize: 9 }} axisLine={false} tickLine={false} width={24} />
+          <Tooltip contentStyle={cs} />
+          <Line type="monotone" dataKey="S1" stroke="#6366f1" strokeWidth={2} dot={false} id={id} />
+          <Line type="monotone" dataKey="S2" stroke="#ec4899" strokeWidth={2} dot={false} />
+        </Comp>
+      </ResponsiveContainer>
+    );
+  }
+  if (visualType === 'scatter') {
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <ScatterChart>
+          <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
+          <XAxis dataKey="x" type="number" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} />
+          <YAxis dataKey="y" type="number" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} width={24} />
+          <Tooltip contentStyle={cs} />
+          <Scatter data={d} fill="#6366f1" id={id} />
+        </ScatterChart>
+      </ResponsiveContainer>
+    );
+  }
+  if (visualType === 'matrix' || visualType === 'table') {
+    const rows = [['A1','B1','C1'],['A2','B2','C2'],['A3','B3','C3']];
+    const hdrs = ['Cat','Col 1','Col 2'];
+    return (
+      <div style={{ width:'100%', height:'100%', overflow:'hidden', padding:'6px', boxSizing:'border-box' }}>
+        <table style={{ width:'100%', fontSize:9, borderCollapse:'collapse' }}>
+          <thead>
+            <tr style={{ background:'#1e293b', color:'#e2e8f0' }}>
+              {hdrs.map(h => <th key={h} style={{ padding:'4px 6px', textAlign:'center' }}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r,i) => (
+              <tr key={i} style={{ background: i%2 ? '#f8fafc' : '#fff', borderBottom:'1px solid #f1f5f9' }}>
+                <td style={{ padding:'4px 6px', fontWeight:700, color:'#312e81' }}>{r[0]}</td>
+                {r.slice(1).map((v,j) => <td key={j} style={{ padding:'4px 6px', textAlign:'right', color:'#0f172a' }}>{SAMPLE_VALS[i*2+j]}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  if (visualType === 'kpi' || visualType === 'card') {
+    return (
+      <div style={{ width:'100%', height:'100%', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:6, padding:8, boxSizing:'border-box' }}>
+        <div style={{ fontSize:28, fontWeight:900, color:'#6366f1', letterSpacing:-1 }}>42,891</div>
+        <div style={{ fontSize:10, color:'#64748b', fontWeight:700, textTransform:'uppercase', letterSpacing:1 }}>Valor total</div>
+        <div style={{ fontSize:10, color:'#10b981', fontWeight:700 }}>↑ 12.4%</div>
+      </div>
+    );
+  }
+
+  if (visualType === 'slicer') {
+    return (
+      <div style={{ width:'100%', height:'100%', display:'flex', flexDirection:'column', gap:4, padding:'8px 6px', boxSizing:'border-box' }}>
+        {['Opción A','Opción B','Opción C'].map((opt, i) => (
+          <div key={i} style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 8px', borderRadius:6,
+            background: i === 0 ? '#eff6ff' : 'transparent', border:`1px solid ${i===0?'#6366f1':'#e2e8f0'}`, fontSize:10 }}>
+            <div style={{ width:10, height:10, borderRadius:'50%', background: i===0 ? '#6366f1' : '#e2e8f0', flexShrink:0 }} />
+            <span style={{ color: i===0 ? '#4338ca' : '#64748b', fontWeight: i===0 ? 700 : 400 }}>{opt}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // default: bar (grouped)
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <BarChart data={d} id={id} barGap={2}>
+        <CartesianGrid strokeDasharray="3 3" opacity={0.2} vertical={false} />
+        <XAxis dataKey="name" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} />
+        <YAxis tick={{ fontSize: 9 }} axisLine={false} tickLine={false} width={24} />
+        <Tooltip contentStyle={cs} />
+        <Bar dataKey="S1" fill="#6366f1" radius={[3,3,0,0]} />
+        <Bar dataKey="S2" fill="#8b5cf6" radius={[3,3,0,0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
 function ChartCard({ widget, isFavorite, onToggleFavorite, onAdd, isOwner }: any) {
-  const data = generateMockData(widget.category);
-  const type = (widget.category || 'bar').toLowerCase();
-  
-  // Tratar de deducir el tipo visual desde executionJSON si es posible
-  let visualType = type;
+  // Backend sends: w.*, v.configJSON, v.executionJSON, v.versionTag, v.versionId
+  // visualType is stored inside configJSON as { visualType, code, mapping, ... }
+  let visualType = 'bar';
+
+  // 1) Try configJSON first (most reliable — set by VisualGenerator at save time)
   try {
-    if (widget.executionJSON) {
-      const exec = JSON.parse(widget.executionJSON);
-      if (exec.visualType) visualType = exec.visualType;
-    }
+    const cfg = typeof widget.configJSON === 'string'
+      ? JSON.parse(widget.configJSON)
+      : (widget.configJSON || {});
+    if (cfg.visualType) visualType = cfg.visualType.toLowerCase();
   } catch(e) {}
+
+  // 2) Try executionJSON
+  if (visualType === 'bar') {
+    try {
+      const exec = typeof widget.executionJSON === 'string'
+        ? JSON.parse(widget.executionJSON)
+        : (widget.executionJSON || {});
+      if (exec.visualType) visualType = exec.visualType.toLowerCase();
+    } catch(e) {}
+  }
+
+  // 3) Try top-level widget.visualType field
+  if (visualType === 'bar' && widget.visualType) {
+    visualType = String(widget.visualType).toLowerCase();
+  }
+
+  // 4) widget.name heuristic (last resort)
+  if (visualType === 'bar') {
+    const nm = (widget.name || '').toLowerCase();
+    if (nm.includes('dona') || nm.includes('donut')) visualType = 'donut';
+    else if (nm.includes('pie') || nm.includes('circulo')) visualType = 'pie';
+    else if (nm.includes('matriz') || nm.includes('matrix')) visualType = 'matrix';
+    else if (nm.includes('linea') || nm.includes('line')) visualType = 'line';
+    else if (nm.includes('area')) visualType = 'area';
+    else if (nm.includes('tabla') || nm.includes('table')) visualType = 'table';
+    else if (nm.includes('kpi') || nm.includes('tarjeta')) visualType = 'kpi';
+    else if (nm.includes('dispersion') || nm.includes('scatter')) visualType = 'scatter';
+  }
+
+  const typeIcon = TYPE_ICON_MAP[visualType] || '📊';
+  const authorLabel = widget.authorName || widget.ownerName ||
+    (isOwner ? 'Tú' : (widget.ownerId ? `Dev ${String(widget.ownerId).slice(0,6)}` : 'Desarrollador'));
 
   return (
     <div className="bg-white rounded-[24px] shadow-sm hover:shadow-xl p-5 border border-slate-200 transition-all duration-300 relative group flex flex-col h-full">
-      <div className="flex justify-between items-start mb-4">
-        <div>
-          <h3 className="font-bold text-slate-900 text-lg leading-tight mb-1">{widget.name}</h3>
-          <p className="text-xs text-slate-500 font-medium">por {isOwner ? 'Tú' : 'Desarrollador'}</p>
-        </div>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleFavorite(widget.id);
-          }}
-          className="p-2 hover:bg-slate-100 rounded-full transition-colors flex-shrink-0"
-        >
-          <Heart className={`w-5 h-5 ${isFavorite ? 'fill-red-500 text-red-500' : 'text-slate-400'}`} />
-        </button>
-      </div>
-
-      <div className="h-40 w-full mb-4 opacity-80 group-hover:opacity-100 transition-opacity">
-        <ResponsiveContainer width="100%" height="100%">
-          {visualType.includes('line') || visualType.includes('area') ? (
-            <LineChart data={data} id={`chart-${widget.id}`}>
-              <CartesianGrid strokeDasharray="3 3" opacity={0.3} vertical={false} />
-              <XAxis dataKey="name" tick={{fontSize: 10}} axisLine={false} tickLine={false} />
-              <YAxis tick={{fontSize: 10}} axisLine={false} tickLine={false} width={30} />
-              <Tooltip cursor={{stroke: '#e2e8f0', strokeWidth: 2}} contentStyle={{borderRadius: 8, border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}} />
-              <Line type="monotone" dataKey="value" stroke="#8b5cf6" strokeWidth={3} dot={{r: 4, strokeWidth: 2}} activeDot={{r: 6}} id={`line-${widget.id}`} />
-            </LineChart>
-          ) : visualType.includes('pie') || visualType.includes('donut') ? (
-            <PieChart id={`chart-${widget.id}`}>
-              <Pie
-                data={data}
-                cx="50%"
-                cy="50%"
-                innerRadius={visualType.includes('donut') ? 40 : 0}
-                outerRadius={65}
-                dataKey="value"
-                stroke="none"
-                id={`pie-${widget.id}`}
-              >
-                {data.map((entry, index) => (
-                  <Cell key={`${widget.id}-cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip contentStyle={{borderRadius: 8, border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}} />
-            </PieChart>
-          ) : (
-            <BarChart data={data} id={`chart-${widget.id}`}>
-              <CartesianGrid strokeDasharray="3 3" opacity={0.3} vertical={false} />
-              <XAxis dataKey="name" tick={{fontSize: 10}} axisLine={false} tickLine={false} />
-              <YAxis tick={{fontSize: 10}} axisLine={false} tickLine={false} width={30} />
-              <Tooltip cursor={{fill: '#f8fafc'}} contentStyle={{borderRadius: 8, border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}} />
-              <Bar dataKey="value" fill="#6366f1" radius={[4, 4, 0, 0]} id={`bar-${widget.id}`} />
-            </BarChart>
-          )}
-        </ResponsiveContainer>
-      </div>
-
-      <div className="mt-auto pt-4 border-t border-slate-100 flex items-center justify-between">
-        {isOwner ? (
-          <div className="px-2.5 py-1 bg-indigo-50 text-indigo-600 text-[10px] font-black uppercase tracking-widest rounded-md border border-indigo-100">
-            Propio
+      {/* Header */}
+      <div className="flex justify-between items-start mb-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-base" title={visualType}>{typeIcon}</span>
+            <h3 className="font-bold text-slate-900 text-sm leading-tight truncate">{widget.name}</h3>
           </div>
-        ) : <div />}
+          <div className="flex items-center gap-1.5">
+            <User className="w-3 h-3 text-slate-400 flex-shrink-0" />
+            <p className="text-[11px] text-slate-500 font-medium truncate">{authorLabel}</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-1 flex-shrink-0 ml-2">
+          {/* Visual type badge */}
+          <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 text-[9px] font-black uppercase tracking-wider rounded-md border border-indigo-100">
+            {visualType.replace('-', ' ')}
+          </span>
+          <button
+            onClick={(e) => { e.stopPropagation(); onToggleFavorite(widget.id); }}
+            className="p-1.5 hover:bg-slate-100 rounded-full transition-colors"
+          >
+            <Heart className={`w-4 h-4 ${isFavorite ? 'fill-red-500 text-red-500' : 'text-slate-300'}`} />
+          </button>
+        </div>
+      </div>
 
+      {/* Chart preview — type-specific, generic data */}
+      <div className="h-36 w-full mb-3 opacity-80 group-hover:opacity-100 transition-opacity bg-slate-50 rounded-xl overflow-hidden">
+        <ChartPreviewMini visualType={visualType} widgetId={widget.id} />
+      </div>
+
+      {/* Footer */}
+      <div className="mt-auto pt-3 border-t border-slate-100 flex items-center justify-between">
+        {isOwner ? (
+          <span className="px-2 py-0.5 bg-indigo-50 text-indigo-600 text-[9px] font-black uppercase tracking-widest rounded-md border border-indigo-100">
+            Propio
+          </span>
+        ) : <div />}
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onAdd(widget);
-          }}
-          className="bg-indigo-600 text-white px-4 py-2 rounded-xl flex items-center gap-2 hover:bg-indigo-700 hover:shadow-lg hover:shadow-indigo-500/30 transition-all text-xs font-bold active:scale-95"
+          onClick={(e) => { e.stopPropagation(); onAdd(widget); }}
+          className="bg-indigo-600 text-white px-4 py-1.5 rounded-xl flex items-center gap-1.5 hover:bg-indigo-700 hover:shadow-lg hover:shadow-indigo-500/30 transition-all text-xs font-bold active:scale-95"
         >
-          <Plus className="w-4 h-4" />
-          Añadir
+          <Plus className="w-3.5 h-3.5" /> Añadir
         </button>
       </div>
     </div>
   );
 }
+
 
 export default function MarketplaceDrawer({ isOpen, onClose, onInject }: MarketplaceDrawerProps) {
   const { widgets, fetchWidgets, loading } = useMarketplaceStore();

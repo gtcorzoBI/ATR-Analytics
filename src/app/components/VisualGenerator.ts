@@ -268,8 +268,8 @@ function Chart() {
     }
 
     case 'matrix': {
-      // Matrix: supports MULTIPLE row fields (e.g. Sucursal + ID)
-      const rowFields = getSlot('rows').map(s => s.name);
+      // Matrix: supports MULTIPLE row fields with Power BI-style hierarchy expand/collapse
+      const rowFields = getSlot('rows').map((s: any) => s.name);
       if (rowFields.length === 0 && getSlot('yAxis')[0]) rowFields.push(getSlot('yAxis')[0].name);
       const colField = getSlot('cols')[0]?.name;
       const valItems = getSlot('values').length > 0 ? getSlot('values') : getSlot('yAxisSec');
@@ -279,7 +279,7 @@ function Chart() {
           <div style={{fontSize:14,fontWeight:700,marginBottom:10}}>&#x1F4CA; Matriz Din\u00e1mica</div>
           <div style={{textAlign:'left',lineHeight:1.8}}>
             Necesitas configurar:<br/>
-            \u2022 <b>Filas</b>: 1 o m\u00e1s campos categ\u00f3ricos (ej: Sucursal, ID)<br/>
+            \u2022 <b>Filas</b>: 1 o m\u00e1s campos categ\u00f3ricos (ej: Agencia, VIN)<br/>
             \u2022 <b>Columnas</b>: Campo de agrupaci\u00f3n horizontal<br/>
             \u2022 <b>Valores</b>: 1 o m\u00e1s medidas (SUM, AVG, COUNT, etc.)
           </div>
@@ -287,28 +287,27 @@ function Chart() {
         break;
       }
 
-      const valItemsJson = JSON.stringify(valItems.map(v => ({ name: v.name, agg: v.agg || 'sum', label: `${v.name} [${(v.agg||'sum').toUpperCase()}]` })));
-      const rf = JSON.stringify(rowFields);   // now an ARRAY
+      const valItemsJson = JSON.stringify(valItems.map((v: any) => ({ name: v.name, agg: v.agg || 'sum', label: `${v.name} [${(v.agg||'sum').toUpperCase()}]` })));
+      const rfsJson = JSON.stringify(rowFields);
       const cf = JSON.stringify(colField);
 
       content = `
-  const _rfs = ${rf};  // array of row field names
+  const _rfs = ${rfsJson};
   const _cf = ${cf};
   const _vi = ${valItemsJson};
-  const _fmt = n => new Intl.NumberFormat('en-US', { notation: 'compact' }).format(n);
+  const _fmt = n => typeof n === 'number' ? new Intl.NumberFormat('en-US', { notation: 'compact' }).format(n) : String(n ?? '-');
 
   const _agg = (acc, vi) => {
     if (!acc || acc.count === 0) return '-';
     switch(vi.agg) {
-      case 'avg': return _fmt(acc.sum / acc.count);
-      case 'count': return _fmt(acc.count);
+      case 'avg':            return _fmt(acc.sum / acc.count);
+      case 'count':          return _fmt(acc.count);
       case 'distinct_count': return _fmt(new Set(acc.vals).size);
-      case 'max': return _fmt(acc.max === -Infinity ? 0 : acc.max);
-      case 'min': return _fmt(acc.min === Infinity ? 0 : acc.min);
-      default: return _fmt(acc.sum);
+      case 'max':            return _fmt(acc.max === -Infinity ? 0 : acc.max);
+      case 'min':            return _fmt(acc.min === Infinity ? 0 : acc.min);
+      default:               return _fmt(acc.sum);
     }
   };
-
   const _merge = (a, b) => ({
     sum: a.sum + b.sum, count: a.count + b.count,
     min: Math.min(a.min, b.min), max: Math.max(a.max, b.max),
@@ -316,35 +315,62 @@ function Chart() {
   });
   const _zero = () => ({ sum: 0, count: 0, min: Infinity, max: -Infinity, vals: [] });
 
+  // ── Build hierarchical pivot ──────────────────────────────────────────
+  // Level-0 key = _rfs[0], Level-1 key = _rfs[1] (if exists), etc.
   const pivot = React.useMemo(() => {
-    const rowKeys = new Set();
     const colKeys = new Set();
+    // map[parent][child][col][vi.name] = acc
     const map = {};
     data.forEach(d => {
-      // Multi-row key: join all row fields with separator
-      const r = _rfs.map(rf => String(d[rf] ?? 'N/A')).join(' › ');
-      const c = String(d[_cf] ?? 'N/A');
-      rowKeys.add(r); colKeys.add(c);
-      if (!map[r]) map[r] = {};
-      if (!map[r][c]) map[r][c] = {};
+      const parent = String(d[_rfs[0]] ?? 'N/A');
+      const child  = _rfs.length > 1 ? String(d[_rfs[1]] ?? 'N/A') : null;
+      const col    = String(d[_cf] ?? 'N/A');
+      colKeys.add(col);
+      if (!map[parent]) map[parent] = { _children: {}, _totals: {} };
+      // child row accumulator
+      if (child !== null) {
+        if (!map[parent]._children[child]) map[parent]._children[child] = {};
+        if (!map[parent]._children[child][col]) map[parent]._children[child][col] = {};
+        _vi.forEach(vi => {
+          const v = Number(d[vi.name]) || 0;
+          if (!map[parent]._children[child][col][vi.name]) map[parent]._children[child][col][vi.name] = _zero();
+          const a = map[parent]._children[child][col][vi.name];
+          a.sum += v; a.count++; a.vals.push(String(d[vi.name]));
+          if (v < a.min) a.min = v; if (v > a.max) a.max = v;
+        });
+      }
+      // parent totals
+      if (!map[parent]._totals[col]) map[parent]._totals[col] = {};
       _vi.forEach(vi => {
         const v = Number(d[vi.name]) || 0;
-        if (!map[r][c][vi.name]) map[r][c][vi.name] = _zero();
-        map[r][c][vi.name].sum += v;
-        map[r][c][vi.name].count++;
-        if (v < map[r][c][vi.name].min) map[r][c][vi.name].min = v;
-        if (v > map[r][c][vi.name].max) map[r][c][vi.name].max = v;
-        map[r][c][vi.name].vals.push(String(d[vi.name]));
+        if (!map[parent]._totals[col][vi.name]) map[parent]._totals[col][vi.name] = _zero();
+        const a = map[parent]._totals[col][vi.name];
+        a.sum += v; a.count++; a.vals.push(String(d[vi.name]));
+        if (v < a.min) a.min = v; if (v > a.max) a.max = v;
       });
     });
-    return { rows: Array.from(rowKeys).sort(), cols: Array.from(colKeys).sort(), map };
+    return { parents: Object.keys(map).sort(), cols: Array.from(colKeys).sort(), map };
   }, [data]);
 
-  const rowTot = (r, vi) => pivot.cols.reduce((acc, c) => _merge(acc, pivot.map[r]?.[c]?.[vi.name] || _zero()), _zero());
-  const grandTot = (vi) => pivot.rows.reduce((acc, r) => _merge(acc, rowTot(r, vi)), _zero());
-  const { map } = pivot;
-  // Header shows joined row field names
-  const _rowHeader = _rfs.join(' › ');
+  const hasChildren = _rfs.length > 1;
+  const [expanded, setExpanded] = React.useState(() => new Set());
+  const toggleParent = p => setExpanded(prev => { const s = new Set(prev); s.has(p) ? s.delete(p) : s.add(p); return s; });
+
+  // Grand total across all parents for a given col+vi
+  const grandTotal = (col, vi) => pivot.parents.reduce(
+    (acc, p) => _merge(acc, pivot.map[p]?._totals?.[col]?.[vi.name] || _zero()), _zero()
+  );
+  const grandTotalRow = (vi) => pivot.cols.reduce(
+    (acc, c) => _merge(acc, pivot.parents.reduce((a2, p) => _merge(a2, pivot.map[p]?._totals?.[c]?.[vi.name] || _zero()), _zero())), _zero()
+  );
+
+  const cellStyle = (isParent, isTotal) => ({
+    padding: '6px 10px', textAlign: 'right', borderRight: '1px solid #f1f5f9',
+    fontWeight: isParent ? 700 : 400,
+    background: isTotal ? '#eff0ff' : isParent ? '#f8fafc' : 'transparent',
+    color: isTotal ? '#4338ca' : '#0f172a',
+    fontSize: isParent ? 12 : 11
+  });
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -353,60 +379,83 @@ function Chart() {
         <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
           <thead style={{ position: 'sticky', top: 0, zIndex: 2 }}>
             <tr style={{ background: '#1e293b', color: '#e2e8f0' }}>
-              <th rowSpan={_vi.length > 1 ? 2 : 1} style={{ padding: '8px 12px', textAlign: 'left', borderRight: '2px solid #334155', minWidth: 110 }}>
-                {_rowHeader}
+              <th rowSpan={_vi.length > 1 ? 2 : 1} style={{ padding: '8px 12px', textAlign: 'left', borderRight: '2px solid #334155', minWidth: 160 }}>
+                {_rfs[0]}{_rfs.length > 1 ? ' › ' + _rfs.slice(1).join(' › ') : ''}
               </th>
               {pivot.cols.map(c => (
                 <th key={c} colSpan={_vi.length} style={{ padding: '6px 10px', textAlign: 'center', borderRight: '1px solid #334155', borderBottom: _vi.length > 1 ? '1px solid #4b5563' : undefined }}>
                   {c}
                 </th>
               ))}
-              <th colSpan={_vi.length} style={{ padding: '6px 10px', textAlign: 'center', background: '#4338ca' }}>
-                Total
-              </th>
+              <th colSpan={_vi.length} style={{ padding: '6px 10px', textAlign: 'center', background: '#4338ca' }}>Total</th>
             </tr>
             {_vi.length > 1 && (
               <tr style={{ background: '#334155', color: '#94a3b8' }}>
                 {pivot.cols.flatMap(c => _vi.map(vi => (
-                  <th key={c + vi.name} style={{ padding: '4px 8px', textAlign: 'right', fontSize: 10, whiteSpace: 'nowrap', borderRight: '1px solid #4b5563' }}>
+                  <th key={c+vi.name} style={{ padding: '4px 8px', textAlign: 'right', fontSize: 10, whiteSpace: 'nowrap', borderRight: '1px solid #4b5563' }}>
                     {vi.agg.toUpperCase()}
                   </th>
                 )))}
                 {_vi.map(vi => (
-                  <th key={'t_' + vi.name} style={{ padding: '4px 8px', textAlign: 'right', fontSize: 10, background: '#3730a3', color: '#c7d2fe' }}>
-                    {vi.agg.toUpperCase()}
-                  </th>
+                  <th key={'th_'+vi.name} style={{ padding: '4px 8px', textAlign: 'right', fontSize: 10, background: '#3730a3', color: '#c7d2fe' }}>{vi.agg.toUpperCase()}</th>
                 ))}
               </tr>
             )}
           </thead>
           <tbody>
-            {pivot.rows.map((r, ri) => (
-              <tr key={ri} style={{ borderBottom: '1px solid #f1f5f9', background: ri % 2 ? '#fafbff' : 'transparent' }}>
-                <td style={{ padding: '7px 12px', fontWeight: 700, borderRight: '2px solid #e2e8f0', whiteSpace: 'nowrap' }}>{r}</td>
-                {pivot.cols.flatMap(c => _vi.map(vi => (
-                  <td key={c + vi.name} style={{ padding: '6px 10px', textAlign: 'right', borderRight: '1px solid #f1f5f9', color: map[r]?.[c]?.[vi.name]?.count > 0 ? '#0f172a' : '#cbd5e1' }}>
-                    {_agg(map[r]?.[c]?.[vi.name], vi)}
+            {pivot.parents.map((parent, pi) => (
+              <React.Fragment key={parent}>
+                {/* ── Parent row (always visible) ── */}
+                <tr style={{ background: pi % 2 ? '#f0f4ff' : '#e8eeff', cursor: hasChildren ? 'pointer' : 'default' }}
+                  onClick={() => hasChildren && toggleParent(parent)}>
+                  <td style={{ padding: '8px 12px', fontWeight: 800, borderRight: '2px solid #c7d2fe', whiteSpace: 'nowrap', color: '#312e81', fontSize: 12 }}>
+                    {hasChildren && (
+                      <span style={{ marginRight: 6, display: 'inline-block', transition: 'transform 0.2s',
+                        transform: expanded.has(parent) ? 'rotate(90deg)' : 'rotate(0deg)', fontSize: 10 }}>▶</span>
+                    )}
+                    {parent}
                   </td>
-                )))}
-                {_vi.map(vi => (
-                  <td key={'rt_' + vi.name} style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700, background: '#eff0ff', color: '#4338ca' }}>
-                    {_agg(rowTot(r, vi), vi)}
-                  </td>
+                  {pivot.cols.flatMap(c => _vi.map(vi => (
+                    <td key={c+vi.name} style={cellStyle(true, false)}>
+                      {_agg(pivot.map[parent]?._totals?.[c]?.[vi.name], vi)}
+                    </td>
+                  )))}
+                  {_vi.map(vi => {
+                    const acc = pivot.cols.reduce((a, c) => _merge(a, pivot.map[parent]?._totals?.[c]?.[vi.name] || _zero()), _zero());
+                    return <td key={'rt_'+vi.name} style={cellStyle(true, true)}>{_agg(acc, vi)}</td>;
+                  })}
+                </tr>
+                {/* ── Child rows (only when expanded) ── */}
+                {hasChildren && expanded.has(parent) && Object.keys(pivot.map[parent]._children).sort().map((child, ci) => (
+                  <tr key={child} style={{ background: ci % 2 ? '#fafbff' : '#f8f9ff', borderBottom: '1px solid #f1f5f9' }}>
+                    <td style={{ padding: '6px 12px 6px 32px', fontWeight: 500, borderRight: '2px solid #e2e8f0', whiteSpace: 'nowrap', color: '#334155', fontSize: 11 }}>
+                      └ {child}
+                    </td>
+                    {pivot.cols.flatMap(c => _vi.map(vi => (
+                      <td key={c+vi.name} style={cellStyle(false, false)}>
+                        {_agg(pivot.map[parent]._children[child]?.[c]?.[vi.name], vi)}
+                      </td>
+                    )))}
+                    {_vi.map(vi => {
+                      const acc = pivot.cols.reduce((a, c) => _merge(a, pivot.map[parent]._children[child]?.[c]?.[vi.name] || _zero()), _zero());
+                      return <td key={'crt_'+vi.name} style={cellStyle(false, true)}>{_agg(acc, vi)}</td>;
+                    })}
+                  </tr>
                 ))}
-              </tr>
+              </React.Fragment>
             ))}
           </tbody>
           <tfoot>
             <tr style={{ background: '#1e293b', color: '#fff', fontWeight: 700, borderTop: '2px solid #334155' }}>
               <td style={{ padding: '7px 12px', borderRight: '2px solid #334155' }}>Gran Total</td>
-              {pivot.cols.flatMap(c => _vi.map(vi => {
-                const acc = pivot.rows.reduce((a, r) => _merge(a, map[r]?.[c]?.[vi.name] || _zero()), _zero());
-                return <td key={c + vi.name + 'gf'} style={{ padding: '6px 10px', textAlign: 'right', borderRight: '1px solid #334155' }}>{_agg(acc, vi)}</td>;
-              }))}
+              {pivot.cols.flatMap(c => _vi.map(vi => (
+                <td key={c+vi.name+'gf'} style={{ padding: '6px 10px', textAlign: 'right', borderRight: '1px solid #334155' }}>
+                  {_agg(grandTotal(c, vi), vi)}
+                </td>
+              )))}
               {_vi.map(vi => (
-                <td key={'gt_' + vi.name} style={{ padding: '6px 10px', textAlign: 'right', background: '#3730a3', color: '#e0e7ff' }}>
-                  {_agg(grandTot(vi), vi)}
+                <td key={'gt_'+vi.name} style={{ padding: '6px 10px', textAlign: 'right', background: '#3730a3', color: '#e0e7ff' }}>
+                  {_agg(grandTotalRow(vi), vi)}
                 </td>
               ))}
             </tr>
@@ -416,7 +465,8 @@ function Chart() {
       break;
     }
 
-     case 'slicer': {
+
+    case 'slicer': {
       const field = getSlot('cols')[0]?.name || getSlot('xAxis')[0]?.name || getSlot('yAxis')[0]?.name || Object.values(mapping).flat()[0]?.name;
       if (!field) {
         return `function Chart() { return <div style={{padding:20,textAlign:'center',opacity:0.5,fontSize:12}}>Arrastra un campo al slot de <b>Columnas</b> para activar el filtro.</div>; }`;
