@@ -26,15 +26,8 @@ export function AdminUserCreation({ onCreate }: { onCreate: (data: any) => void 
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
-  const [agencies, setAgencies] = useState<string[]>([]);
   const [password, setPassword] = useState("");
-  const [isDev, setIsDev] = useState(false);
-
-  const toggleAgency = (agency: string) => {
-    setAgencies(prev => 
-      prev.includes(agency) ? prev.filter(a => a !== agency) : [...prev, agency]
-    );
-  };
+  const [specialRole, setSpecialRole] = useState<'none' | 'superuser' | 'extrauser' | 'dev'>('none');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,18 +35,14 @@ export function AdminUserCreation({ onCreate }: { onCreate: (data: any) => void 
       alert("Por favor completa todos los campos requeridos.");
       return;
     }
-    if (agencies.length === 0 && !isDev) {
-      alert("Por favor selecciona al menos una agencia o actívalo como Desarrollador.");
-      return;
-    }
     
     onCreate({ 
       firstName, 
       lastName, 
       email, 
-      agencies: isDev ? ["ALL"] : agencies, 
+      agencies: [], // Agencias se asignan ahora desde el Dashboard/Filtros
       password,
-      role: isDev ? "dev" : "user",
+      role: specialRole === 'none' ? "user" : specialRole,
       permissions: { areas: [], dashboards: [] },
       mustChangePassword: true
     });
@@ -61,9 +50,8 @@ export function AdminUserCreation({ onCreate }: { onCreate: (data: any) => void 
     setFirstName("");
     setLastName("");
     setEmail("");
-    setAgencies([]);
     setPassword("");
-    setIsDev(false);
+    setSpecialRole('none');
     alert("Usuario creado exitosamente");
   };
 
@@ -77,21 +65,50 @@ export function AdminUserCreation({ onCreate }: { onCreate: (data: any) => void 
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4">
-        {/* Toggle DEV Role */}
-        <div className="bg-indigo-50 border border-indigo-100 rounded-lg p-3 flex items-start gap-3">
-          <div className="pt-0.5">
-            <input 
-              type="checkbox" 
-              className="w-4 h-4 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-600 cursor-pointer"
-              checked={isDev}
-              onChange={(e) => setIsDev(e.target.checked)}
-            />
-          </div>
-          <div>
-            <label className="text-sm font-bold text-indigo-900 cursor-pointer" onClick={() => setIsDev(!isDev)}>
-              Activar Rol Desarrollador (Lienzo DEV)
+        {/* Roles Especiales */}
+        <div className="space-y-2 mb-4">
+          <label className="block text-sm font-medium text-gray-700 mb-2">Rol del Usuario</label>
+          
+          <div className="flex flex-col gap-2">
+            <label className={`border rounded-lg p-3 flex items-start gap-3 cursor-pointer transition-colors ${specialRole === 'none' ? 'bg-gray-50 border-gray-400' : 'bg-white border-gray-200'}`}>
+              <div className="pt-0.5">
+                <input type="radio" name="role" checked={specialRole === 'none'} onChange={() => setSpecialRole('none')} className="w-4 h-4 text-[#E85D5D] focus:ring-[#E85D5D]"/>
+              </div>
+              <div>
+                <span className="text-sm font-bold text-gray-900">Usuario Estándar</span>
+                <p className="text-xs text-gray-500 mt-1">Acceso normal a los tableros que le sean asignados por la administración.</p>
+              </div>
             </label>
-            <p className="text-xs text-indigo-700 leading-tight mt-1">Este usuario tendrá acceso al Canvas de Mapeo Interactivo de Datos en lugar del Dashboard normal.</p>
+
+            <label className={`border rounded-lg p-3 flex items-start gap-3 cursor-pointer transition-colors ${specialRole === 'superuser' ? 'bg-red-50 border-red-300 shadow-sm' : 'bg-white border-gray-200'}`}>
+              <div className="pt-0.5">
+                <input type="radio" name="role" checked={specialRole === 'superuser'} onChange={() => setSpecialRole('superuser')} className="w-4 h-4 text-red-600 focus:ring-red-600"/>
+              </div>
+              <div>
+                <span className="text-sm font-bold text-red-900">SuperUSER (Finanzas/Ejecutivo)</span>
+                <p className="text-xs text-red-700 mt-1">Usuario normal (con tableros asignados) pero con acceso al botón del FP&A Studio (Alpha).</p>
+              </div>
+            </label>
+
+            <label className={`border rounded-lg p-3 flex items-start gap-3 cursor-pointer transition-colors ${specialRole === 'extrauser' ? 'bg-orange-50 border-orange-300 shadow-sm' : 'bg-white border-gray-200'}`}>
+              <div className="pt-0.5">
+                <input type="radio" name="role" checked={specialRole === 'extrauser'} onChange={() => setSpecialRole('extrauser')} className="w-4 h-4 text-orange-600 focus:ring-orange-600"/>
+              </div>
+              <div>
+                <span className="text-sm font-bold text-orange-900">ExtraUser (Gestor Kanban)</span>
+                <p className="text-xs text-orange-700 mt-1">Acceso al FP&A Studio. Rol exclusivo para poder mover tarjetas en el Kanban y recibir notificaciones.</p>
+              </div>
+            </label>
+
+            <label className={`border rounded-lg p-3 flex items-start gap-3 cursor-pointer transition-colors ${specialRole === 'dev' ? 'bg-indigo-50 border-indigo-300 shadow-sm' : 'bg-white border-gray-200'}`}>
+              <div className="pt-0.5">
+                <input type="radio" name="role" checked={specialRole === 'dev'} onChange={() => setSpecialRole('dev')} className="w-4 h-4 text-indigo-600 focus:ring-indigo-600"/>
+              </div>
+              <div>
+                <span className="text-sm font-bold text-indigo-900">Desarrollador (Lienzo DEV)</span>
+                <p className="text-xs text-indigo-700 mt-1">Acceso exclusivo al Canvas de Mapeo Interactivo de Datos en lugar del Dashboard.</p>
+              </div>
+            </label>
           </div>
         </div>
 
@@ -125,24 +142,7 @@ export function AdminUserCreation({ onCreate }: { onCreate: (data: any) => void 
            />
         </div>
 
-        {!isDev && (
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Agencias Múltiples</label>
-            <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg p-2 space-y-1 bg-gray-50">
-              {AGENCIES.map(ag => (
-                <label key={ag} className="flex items-center gap-2 p-1.5 hover:bg-white rounded cursor-pointer transition">
-                  <input
-                    type="checkbox"
-                    className="rounded border-gray-300 text-[#E85D5D] focus:ring-[#E85D5D]"
-                    checked={agencies.includes(ag)}
-                    onChange={() => toggleAgency(ag)}
-                  />
-                  <span className="text-sm text-gray-700">{ag}</span>
-                </label>
-              ))}
-            </div>
-          </div>
-        )}
+
 
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Contraseña Temporal</label>

@@ -72,46 +72,164 @@ function Chart() {
     case 'bar-h':
     case 'line':
     case 'area':
-    case 'combo':
-      const isStacked = type === 'bar-stacked';
+    case 'combo': {
+      const isStacked    = type === 'bar-stacked';
       const isHorizontal = type === 'bar-h';
-      const ChartComp = type.includes('bar') ? 'BarChart' : type === 'area' ? 'AreaChart' : type === 'combo' ? 'ComposedChart' : 'LineChart';
-      const LineComp = type === 'area' ? 'Area' : type === 'combo' ? 'Bar' : 'Line'; // combo uses Bar mostly with Line
-      
+      const ChartComp    = type.includes('bar') ? 'BarChart' : type === 'area' ? 'AreaChart' : type === 'combo' ? 'ComposedChart' : 'LineChart';
+
+      // ── Legend field: splits data into multiple coloured series ──────────
+      const legendField  = getSlot('legend')[0]?.name  || null;
+      // ── Small Multiples field: creates a trellis grid ──────────────────
+      const smField      = getSlot('smallMultiples')[0]?.name || null;
+      // ── Tooltip extra fields ────────────────────────────────────────────
+      const tooltipFields = getSlot('tooltips').map(t => t.name);
+
+      const legendFieldJson = JSON.stringify(legendField);
+      const smFieldJson     = JSON.stringify(smField);
+      const tooltipJson     = JSON.stringify(tooltipFields);
+
       content = `
+  // ── Legend: derive unique series keys from the legend field (if any) ────
+  const legendField = ${legendFieldJson};
+  const smField     = ${smFieldJson};
+  const tooltipExtraFields = ${tooltipJson};
+
+  const legendKeys = React.useMemo(() => {
+    if (!legendField) return series.map(s => s.name);
+    return Array.from(new Set(processedData.map(r => String(r[legendField] ?? 'N/A')))).sort();
+  }, [processedData]);
+
+  // When a legend field is active, pivot data so each legend value becomes a column
+  const chartData = React.useMemo(() => {
+    if (!legendField) return processedData;
+    const cats = Array.from(new Set(processedData.map(r => String(r[xAxis] ?? 'N/A'))));
+    return cats.map(cat => {
+      const catRows = processedData.filter(r => String(r[xAxis] ?? 'N/A') === cat);
+      const out = { [xAxis]: cat };
+      legendKeys.forEach(lk => {
+        const lkRows = catRows.filter(r => String(r[legendField] ?? 'N/A') === lk);
+        series.forEach(s => {
+          const key = lk + '__' + s.name;
+          out[key] = lkRows.reduce((acc, r) => acc + (Number(r[s.name]) || 0), 0);
+        });
+      });
+      return out;
+    });
+  }, [processedData, legendKeys]);
+
+  // ── Small Multiples: split data into panels ──────────────────────────────
+  const smPanels = React.useMemo(() => {
+    if (!smField) return [{ label: null, data: chartData }];
+    const panelMap = {};
+    processedData.forEach(r => {
+      const k = String(r[smField] ?? 'N/A');
+      if (!panelMap[k]) panelMap[k] = [];
+      panelMap[k].push(r);
+    });
+    return Object.entries(panelMap).sort((a,b) => a[0].localeCompare(b[0])).map(([label, rows]) => {
+      if (!legendField) return { label, data: rows };
+      // Re-pivot for each panel
+      const cats = Array.from(new Set(rows.map(r => String(r[xAxis] ?? 'N/A'))));
+      const panelData = cats.map(cat => {
+        const catRows = rows.filter(r => String(r[xAxis] ?? 'N/A') === cat);
+        const out = { [xAxis]: cat };
+        legendKeys.forEach(lk => {
+          const lkRows = catRows.filter(r => String(r[legendField] ?? 'N/A') === lk);
+          series.forEach(s => {
+            out[lk + '__' + s.name] = lkRows.reduce((acc, r2) => acc + (Number(r2[s.name]) || 0), 0);
+          });
+        });
+        return out;
+      });
+      return { label, data: panelData };
+    });
+  }, [processedData, legendKeys, chartData]);
+
+  // Compute global Y-max for synchronized axes across small multiples
+  const globalMax = React.useMemo(() => {
+    let max = 0;
+    smPanels.forEach(p => p.data.forEach(row => {
+      const keys = legendField ? legendKeys.flatMap(lk => series.map(s => lk + '__' + s.name)) : series.map(s => s.name);
+      keys.forEach(k => { const v = Number(row[k]) || 0; if (v > max) max = v; });
+    }));
+    // Nice-number rounding
+    if (max === 0) return 'auto';
+    const n = 5, raw = max / n, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const r = raw / mag;
+    const nice = r < 1.5 ? 1 : r < 3 ? 2 : r < 7 ? 5 : 10;
+    return Math.ceil(max / (nice * mag)) * (nice * mag);
+  }, [smPanels]);
+
+  const seriesKeys = legendField
+    ? legendKeys.flatMap(lk => series.map(s => ({ key: lk + '__' + s.name, label: lk + ' / ' + s.key })))
+    : series.map(s => ({ key: s.name, label: s.key + ' (' + s.agg + ')' }));
+
+  const CustomTooltip = ({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    const extraData = processedData.find(r => String(r[xAxis]) === String(label)) || {};
+    return (
+      <div style={{ background: '#1e293b', border: 'none', borderRadius: 8, padding: '10px 14px', color: '#f8fafc', fontSize: 11 }}>
+        <div style={{ fontWeight: 700, marginBottom: 6, color: '#94a3b8' }}>{label}</div>
+        {payload.map((p, i) => (
+          <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 2 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: p.color, flexShrink: 0 }} />
+            <span style={{ opacity: 0.8 }}>{p.name}:</span>
+            <span style={{ fontWeight: 700 }}>{new Intl.NumberFormat('en-US', { notation: 'compact' }).format(p.value)}</span>
+          </div>
+        ))}
+        {tooltipExtraFields.map(tf => extraData[tf] !== undefined && (
+          <div key={tf} style={{ borderTop: '1px solid #334155', marginTop: 6, paddingTop: 4, fontSize: 10, color: '#94a3b8' }}>
+            <span style={{ fontWeight: 700 }}>{tf}:</span> {String(extraData[tf])}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const cols = smField ? Math.min(smPanels.length, 3) : 1;
+  const panelMinH = smField ? 200 : undefined;
+
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <h2 style={{ fontWeight: 700, fontSize: 14, marginBottom: 8, color: 'inherit' }}>{${JSON.stringify(title)}}</h2>
-      <ResponsiveContainer width="100%" height="100%" minHeight={250}>
-        <${ChartComp} data={processedData} layout="${isHorizontal ? 'vertical' : 'horizontal'}" margin={{top:10,right:30,left:0,bottom:0}}>
-          <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
-          ${isHorizontal ? `
-          <XAxis type="number" tick={{ fontSize: 10 }} />
-          <YAxis dataKey={xAxis} type="category" tick={{ fontSize: 10 }} width={80} />
-          ` : `
-          <XAxis dataKey={xAxis} tick={{ fontSize: 10 }} />
-          <YAxis tick={{ fontSize: 10 }} />
-          `}
-          <Tooltip contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: 8, color: '#f8fafc', fontSize: 12 }} />
-          <Legend wrapperStyle={{ fontSize: 11 }} />
-          {series.map((s, i) => (
-            <${type==='line'?'Line':type==='area'?'Area':'Bar'} 
-              key={s.name} 
-              dataKey={s.name} 
-              name={s.key + " (" + s.agg + ")"}
-              fill={colors[i % colors.length]} 
-              stroke={colors[i % colors.length]}
-              strokeWidth={2}
-              stackId="${isStacked ? 'a' : ''}" 
-              radius={${isStacked || type==='line' || type==='area' ? '0' : '[4,4,0,0]'}} 
-            />
-          ))}
-          ${type==='combo' && getSlot('yAxisSec').length > 0 ? getSlot('yAxisSec').map((s,i) => `
-            <Line key={"sec_"+Math.random()} type="monotone" dataKey=${JSON.stringify(s.name)} name=${JSON.stringify(s.name)} stroke="#ef4444" strokeWidth={3} />
-          `).join('') : ''}
-        </${ChartComp}>
-      </ResponsiveContainer>`;
+      <h2 style={{ fontWeight: 700, fontSize: 14, marginBottom: 8, color: 'inherit', flexShrink: 0 }}>{${JSON.stringify(title)}}</h2>
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: \`repeat(\${cols}, 1fr)\`, gap: 12, overflow: 'auto' }}>
+        {smPanels.map((panel, pi) => (
+          <div key={pi} style={{ display: 'flex', flexDirection: 'column', minHeight: panelMinH }}>
+            {panel.label && <div style={{ fontSize: 11, fontWeight: 700, color: '#6366f1', marginBottom: 4, textAlign: 'center' }}>{panel.label}</div>}
+            <ResponsiveContainer width="100%" height={smField ? 180 : '100%'} minHeight={180}>
+              <${ChartComp} data={panel.data} layout="${isHorizontal ? 'vertical' : 'horizontal'}" margin={{top:10,right:20,left:0,bottom:0}}>
+                <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
+                ${isHorizontal ? `
+                <XAxis type="number" tick={{ fontSize: 10 }} domain={smField ? [0, globalMax] : undefined} />
+                <YAxis dataKey={xAxis} type="category" tick={{ fontSize: 10 }} width={80} />
+                ` : `
+                <XAxis dataKey={xAxis} tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 10 }} domain={smField ? [0, globalMax] : undefined} />
+                `}
+                <Tooltip content={<CustomTooltip />} />
+                {(pi === 0) && <Legend wrapperStyle={{ fontSize: 11 }} />}
+                {seriesKeys.map((s, i) => (
+                  <${type === 'line' ? 'Line' : type === 'area' ? 'Area' : 'Bar'}
+                    key={s.key}
+                    dataKey={s.key}
+                    name={s.label}
+                    fill={colors[i % colors.length]}
+                    stroke={colors[i % colors.length]}
+                    strokeWidth={2}
+                    stackId="${isStacked ? 'a' : ''}"
+                    radius={${isStacked || type === 'line' || type === 'area' ? '0' : '[4,4,0,0]'}}
+                  />
+                ))}
+                ${type === 'combo' && getSlot('yAxisSec').length > 0 ? getSlot('yAxisSec').map((s) => `
+                  <Line key="sec_${s.name}" type="monotone" dataKey="${s.name}" name="${s.name}" stroke="#ef4444" strokeWidth={3} />
+                `).join('') : ''}
+              </${ChartComp}>
+            </ResponsiveContainer>
+          </div>
+        ))}
+      </div>`;
       break;
+    }
 
     case 'pie':
     case 'donut': {
@@ -476,29 +594,74 @@ function Chart() {
 function Chart() {
   const FF = ${f};
   const win = window;
+  // ── Access restrictions set by admin (filter-based access control) ─────
+  const allRestr = win.__filterAccessRestrictions || {};
+  const restrKey = Object.keys(allRestr).find(k => k.toLowerCase().trim() === FF.toLowerCase().trim());
+  const restrictions = restrKey ? allRestr[restrKey] : undefined; // string[] | undefined
+  const isRestricted = Array.isArray(restrictions) && restrictions.length > 0;
+  const restrictionsLower = React.useMemo(() => isRestricted ? restrictions.map(r => String(r).toLowerCase().trim()) : [], [restrictions, isRestricted]);
+
+  const getRowValue = (row, fieldName) => {
+    const keys = Object.keys(row);
+    const fnLower = fieldName.toLowerCase().trim(); const exactMatch = keys.find(k => k.toLowerCase().trim() === fnLower); if (exactMatch) return row[exactMatch]; const prefixMatch = keys.find(k => { const kl = k.toLowerCase().trim(); return kl.startsWith(fnLower + \" \") || kl.startsWith(fnLower + \">\") || kl.startsWith(fnLower + \".\"); }); if (prefixMatch) return row[prefixMatch];
+    return undefined;
+  };
+
   const IS_DATE = React.useMemo(() => {
-    const s = data.slice(0,30).map(d=>d[FF]).filter(Boolean);
+    const s = data.slice(0,30).map(d=>getRowValue(d, FF)).filter(Boolean);
     return s.length > 0 && s.filter(v => !isNaN(Date.parse(String(v)))).length / s.length > 0.6;
   }, [data]);
-  const options = React.useMemo(() =>
-    Array.from(new Set(data.map(d=>String(d[FF])))).filter(v=>v&&v!=='null'&&v!=='undefined').sort()
+  const allOptions = React.useMemo(() =>
+    Array.from(new Set(data.map(d=>String(getRowValue(d, FF) ?? '')))).filter(v=>v&&v!=='null'&&v!=='undefined').sort()
   , [data]);
+  // If restricted, only show allowed values (case-insensitive)
+  const options = React.useMemo(() =>
+    isRestricted ? allOptions.filter(o => restrictionsLower.includes(String(o).toLowerCase().trim())) : allOptions
+  , [allOptions, restrictionsLower]);
   const getActive = () => { const f=(win.__dashboardFilters||{})[FF]; return Array.isArray(f)?f:[]; };
-  const [sel, setSel] = React.useState(()=>getActive());
+  const [sel, setSel] = React.useState(()=> {
+    const act = getActive();
+    if (isRestricted && act.length === 0) return [...restrictions];
+    return act;
+  });
+
   const [search, setSearch] = React.useState('');
   const [expanded, setExpanded] = React.useState(true);
   const [dateFrom, setDateFrom] = React.useState('');
   const [dateTo, setDateTo] = React.useState('');
   const filtered = search ? options.filter(o=>o.toLowerCase().includes(search.toLowerCase())) : options;
-  const isAll = sel.length === 0;
-  const label = isAll ? 'Todos (' + options.length + ')' : sel.length === 1 ? sel[0] : sel.length + ' de ' + options.length;
+  const isAll = sel.length === 0 || (isRestricted && sel.length === restrictions.length && restrictions.every(r => sel.includes(r)));
+  const label = isAll ? (isRestricted ? 'Restringido' : 'Todos') + ' (' + options.length + ')' : sel.length === 1 ? sel[0] : sel.length + ' de ' + options.length;
   const dispatch = () => win.dispatchEvent(new Event('dashboard-filter'));
   const toggle = (val) => {
     win.__dashboardFilters = win.__dashboardFilters||{};
-    let cur = [...((win.__dashboardFilters[FF])||[])].filter(v=>typeof v==='string');
-    if(val==='__all__'){delete win.__dashboardFilters[FF];setSel([]);}
-    else if(cur.includes(val)){cur=cur.filter(v=>v!==val);win.__dashboardFilters[FF]=cur.length?cur:undefined;if(!cur.length)delete win.__dashboardFilters[FF];setSel(cur);}
-    else{cur=[...cur,val];win.__dashboardFilters[FF]=cur;setSel(cur);}
+    let cur = [...(Array.isArray(win.__dashboardFilters[FF]) ? win.__dashboardFilters[FF] : [])];
+    if(val==='__all__'){
+      if(isRestricted) {
+        win.__dashboardFilters[FF] = [...restrictions];
+        setSel([...restrictions]);
+      } else {
+        delete win.__dashboardFilters[FF];
+        setSel([]);
+      }
+    }
+    else if(cur.includes(val)){
+      cur=cur.filter(v=>v!==val);
+      if(!cur.length && isRestricted) {
+        // Don't allow empty selection if restricted, revert to all allowed
+        win.__dashboardFilters[FF] = [...restrictions];
+        setSel([...restrictions]);
+      } else {
+        win.__dashboardFilters[FF]=cur.length?cur:undefined;
+        if(!cur.length) delete win.__dashboardFilters[FF];
+        setSel(cur);
+      }
+    }
+    else{
+      cur=[...cur,val];
+      win.__dashboardFilters[FF]=cur;
+      setSel(cur);
+    }
     dispatch();
   };
   const applyDate = (from, to) => {

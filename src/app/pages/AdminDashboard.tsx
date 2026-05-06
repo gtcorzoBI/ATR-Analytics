@@ -3,6 +3,7 @@ import Header from "../components/Header";
 import { AdminUserCreation, AGENCIES } from "../components/AdminUserCreation";
 import { useDataStore, INITIAL_AREAS, INITIAL_DASHBOARDS_MAP, AREA_NAMES } from "../hooks/useDataStore";
 import { ChevronDown, ChevronRight, MoreVertical, ShieldCheck, Shield, Trash2, KeyRound, Building2, Save, Mail, Eye, EyeOff, Archive, Trash } from "lucide-react";
+import FilterAccessModal from "../components/FilterAccessModal";
 
 const API_BASE = (import.meta as any).env.VITE_API_URL || "http://localhost:3001";
 
@@ -118,6 +119,37 @@ export default function AdminDashboard() {
     dashName: '',
     areaId: ''
   });
+
+  const [filterAccessModal, setFilterAccessModal] = useState<{
+    isOpen: boolean;
+    dashboardId: string;
+    dashboardTitle: string;
+    detectedFilters: string[];
+    dashboardComponents: any[];
+  }>({ isOpen: false, dashboardId: '', dashboardTitle: '', detectedFilters: [], dashboardComponents: [] });
+
+  /** Detect slicer field names from a dashboard's components array */
+  const detectSlicerFilters = (dashboard: any): string[] => {
+    const filters = new Set<string>();
+    const comps = dashboard?.components || dashboard?.config?.components || [];
+    comps.forEach((comp: any) => {
+      const vt = comp.visualType || '';
+      const code = comp.code || '';
+      if (vt === 'slicer' || code.includes('__dashboardFilters')) {
+        const match = code.match(/const FF = (["'`])([^"'`]+)\1/);
+        if (match) filters.add(match[2]);
+        else if (comp.name) filters.add(comp.name.replace(/_/g, ' '));
+      }
+    });
+    return Array.from(filters);
+  };
+
+  const openFilterAccess = (dashboard: any) => {
+    const title = dashboard.title || dashboard.name || 'Dashboard';
+    const filters = detectSlicerFilters(dashboard);
+    const comps = dashboard?.components || dashboard?.config?.components || [];
+    setFilterAccessModal({ isOpen: true, dashboardId: String(dashboard.id), dashboardTitle: title, detectedFilters: filters, dashboardComponents: comps });
+  };
 
   const handleApprove = (pubId: string, areaId: string) => {
     approveDashboard(pubId, areaId);
@@ -487,14 +519,14 @@ export default function AdminDashboard() {
                                   {dashboard.hidden ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                                 </button>
                                 <button
-                                  onClick={() => { if (window.confirm("¿Archivar este dashboard?")) archiveDashboard(area, dashboard.id); }}
+                                  onClick={() => { if (window.confirm('¿Archivar este dashboard?')) archiveDashboard(area, dashboard.id); }}
                                   className="p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition"
                                   title="Archivar"
                                 >
                                   <Archive className="w-4 h-4" />
                                 </button>
                                 <button
-                                  onClick={() => { if (window.confirm("¿Eliminar este dashboard permanentemente?")) deleteSystemDashboard(area, dashboard.id); }}
+                                  onClick={() => { if (window.confirm('¿Eliminar este dashboard permanentemente?')) deleteSystemDashboard(area, dashboard.id); }}
                                   className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition"
                                   title="Eliminar"
                                 >
@@ -506,6 +538,13 @@ export default function AdminDashboard() {
                                   title="Asignar permisos al dashboard"
                                 >
                                   <MoreVertical className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={() => openFilterAccess(dashboard)}
+                                  className="p-1.5 rounded-lg hover:bg-indigo-50 text-indigo-400 hover:text-indigo-600 transition"
+                                  title="Asignar Acceso por Filtros"
+                                >
+                                  <Shield className="w-4 h-4" />
                                 </button>
                               </div>
                             </div>
@@ -862,6 +901,19 @@ export default function AdminDashboard() {
       {/* Modals */}
       {renderAssignmentModal()}
       {renderEditAgenciesModal()}
+
+      {/* Filter Access Modal */}
+      {filterAccessModal.isOpen && (
+        <FilterAccessModal
+          dashboardId={filterAccessModal.dashboardId}
+          dashboardTitle={filterAccessModal.dashboardTitle}
+          detectedFilters={filterAccessModal.detectedFilters}
+          dashboardComponents={filterAccessModal.dashboardComponents}
+          allUsers={getRegularUsers().filter((u: any) => u.role !== 'dev')}
+          token={localStorage.getItem('atr_token') || ''}
+          onClose={() => setFilterAccessModal(prev => ({ ...prev, isOpen: false }))}
+        />
+      )}
 
       {/* Approval Modal */}
       {approvalModal.isOpen && (

@@ -1,3 +1,6 @@
+import React, { useEffect, useRef } from "react";
+import { toPng } from "html-to-image";
+import { jsPDF } from "jspdf";
 import {
   BarChart,
   Bar,
@@ -90,6 +93,8 @@ const generateTableData = () => {
 
 const COLORS = ["#E85D5D", "#DC2626", "#F87171", "#FCA5A5", "#FEE2E2"];
 
+const API = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3001';
+
 interface DashboardDetailProps {
   dashboard: any;
   onBack: () => void;
@@ -101,13 +106,143 @@ export default function DashboardDetail({ dashboard, onBack }: DashboardDetailPr
   const barData = generateBarData();
   const pieData = generatePieData();
   const lineData = generateLineData();
-  const scatterData = generateScatterData();
   const tableData = generateTableData();
 
   const isCustom = !!(config && config.components);
+  const [accessLoaded, setAccessLoaded] = React.useState(false);
+  const exportRef = useRef<HTMLDivElement>(null);
+  const [isExporting, setIsExporting] = React.useState(false);
+
+  const handleExportPDF = async () => {
+    if (!exportRef.current) return;
+    setIsExporting(true);
+    try {
+      // Capture the canvas using html-to-image (bypasses oklch bug in html2canvas)
+      const width = exportRef.current.scrollWidth;
+      const height = exportRef.current.scrollHeight;
+      
+      const imgData = await toPng(exportRef.current, {
+        backgroundColor: '#f3f4f6', // Tailwind gray-100
+        pixelRatio: 2,
+        width: width,
+        height: height,
+      });
+      
+      // Calculate dimensions in mm (approx. 1px = 0.264583 mm)
+      const pxToMm = 0.264583;
+      const imgWidthMm = width * pxToMm; 
+      const imgHeightMm = height * pxToMm;
+      
+      // We want to add a 30mm header at the top
+      const finalPdfWidth = Math.max(Math.ceil(imgWidthMm), 210); // Minimum A4 width
+      const finalPdfHeight = Math.max(Math.ceil(imgHeightMm + 30), 297); // Minimum A4 height
+      
+      // Create PDF with custom dimensions to perfectly fit the dashboard
+      const pdf = new jsPDF({
+        orientation: finalPdfWidth > finalPdfHeight ? 'l' : 'p',
+        unit: 'mm',
+        format: [finalPdfWidth, finalPdfHeight]
+      });
+
+      const today = new Date().toLocaleDateString('es-MX', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      
+      // Add Header text
+      pdf.setFontSize(16);
+      pdf.setTextColor(40, 40, 40);
+      pdf.text(title || 'Dashboard', 15, 15);
+      
+      pdf.setFontSize(10);
+      pdf.setTextColor(120, 120, 120);
+      
+      // Place Date on top right
+      const dateText = `Generado el: ${today}`;
+      const textWidth = pdf.getStringUnitWidth(dateText) * 10 / pdf.internal.scaleFactor;
+      pdf.text(dateText, finalPdfWidth - 15 - textWidth, 15);
+      
+      // Source/Category below title
+      pdf.text(`Origen: ${category}`, 15, 22);
+
+      // Add the captured dashboard image starting below the header (y=30)
+      // Center horizontally if the PDF width is larger than the image
+      const xOffset = (finalPdfWidth > imgWidthMm) ? (finalPdfWidth - imgWidthMm) / 2 : 0;
+      
+      pdf.addImage(imgData, 'PNG', xOffset, 30, imgWidthMm, imgHeightMm);
+      pdf.save(`ATR_Analytics_${title.replace(/\s+/g, '_')}.pdf`);
+    } catch (err: any) {
+      console.error("Failed to generate PDF:", err);
+      alert("Hubo un error al generar el PDF: " + (err?.message || "Error desconocido"));
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // ── Filter Access Enforcement ─────────────────────────────────────────
+  // Fetch this user's filter restrictions and inject into window.__dashboardFilters
+  // so all slicer components inside LiveWidget/InjectedWidget respect them.
+  useEffect(() => {
+    setAccessLoaded(false);
+    const token = localStorage.getItem('atr_token');
+    const userRaw = localStorage.getItem('active_user');
+    
+    if (!token || !userRaw || !dashboard.id) {
+      setAccessLoaded(true);
+      return;
+    }
+
+    try {
+      const user = JSON.parse(userRaw);
+      
+      // Note: We no longer skip for admin/dev so they can test/preview user restrictions if assigned.
+      console.log(`[DashboardDetail] Fetching access for user ${user.id} on dashboard ${dashboard.id}`);
+      
+      fetch(`${API}/api/dashboard-access/${encodeURIComponent(dashboard.id)}/user/${user.id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      }).then(r => r.json()).then(data => {
+        const win = window as any;
+        win.__filterAccessRestrictions = {};
+        win.__dashboardFilters = {};
+
+        if (data.success && data.filters && Object.keys(data.filters).length > 0) {
+          console.log("[DashboardDetail] Security restrictions identified:", data.filters);
+          Object.entries(data.filters as Record<string, string[]>).forEach(([field, vals]) => {
+            if (!vals.includes('__ALL__') && vals.length > 0) {
+              const normalizedField = field.trim();
+              win.__filterAccessRestrictions[normalizedField] = vals;
+              win.__dashboardFilters[normalizedField] = vals;
+            }
+          });
+          // Small delay to ensure all components are aware of the global state change
+          setTimeout(() => {
+            window.dispatchEvent(new Event('dashboard-filter'));
+          }, 100);
+        }
+        setAccessLoaded(true);
+      }).catch(err => {
+        console.error("[DashboardDetail] Failed to fetch access:", err);
+        setAccessLoaded(true);
+      });
+    } catch { 
+      setAccessLoaded(true);
+    }
+  }, [dashboard.id]);
+
+  if (!accessLoaded) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full min-h-[400px]">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mb-4"></div>
+        <p className="text-gray-500 font-medium animate-pulse">Aplicando reglas de seguridad...</p>
+      </div>
+    );
+  }
+  
+  let user: any = null;
+  try {
+    user = JSON.parse(localStorage.getItem('active_user') || '{}');
+  } catch(e) {}
 
   return (
     <div className="space-y-6">
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
@@ -124,27 +259,48 @@ export default function DashboardDetail({ dashboard, onBack }: DashboardDetailPr
         </div>
 
         <div className="flex items-center gap-2">
-          <button className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+          <button 
+            onClick={() => {
+              // Trigger a global refresh event
+              window.dispatchEvent(new Event('dashboard-filter'));
+              // For InjectedWidgets, we might need a more direct way, 
+              // but dispatching this event will trigger re-renders.
+              console.log("[DashboardDetail] Refreshing data...");
+            }}
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+          >
             <RefreshCw className="w-4 h-4" />
             <span className="text-sm font-medium">Actualizar</span>
           </button>
-          <button className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
+          <button 
+            onClick={() => {
+              navigator.clipboard.writeText(window.location.href);
+              alert("Enlace del tablero copiado al portapapeles");
+            }}
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+          >
             <Share2 className="w-4 h-4" />
             <span className="text-sm font-medium">Compartir</span>
           </button>
-          <button className="flex items-center gap-2 px-4 py-2 bg-[#E85D5D] text-white rounded-lg hover:bg-[#DC2626] transition-colors">
+          <button 
+            onClick={handleExportPDF}
+            disabled={isExporting}
+            className={`flex items-center gap-2 px-4 py-2 text-white rounded-lg transition-colors ${isExporting ? 'bg-gray-400' : 'bg-[#E85D5D] hover:bg-[#DC2626]'}`}
+          >
             <Download className="w-4 h-4" />
-            <span className="text-sm font-medium">Exportar</span>
+            <span className="text-sm font-medium">{isExporting ? 'Exportando...' : 'Exportar'}</span>
           </button>
         </div>
       </div>
 
+      <div ref={exportRef} className="bg-gray-100 rounded-xl border border-gray-200 overflow-auto p-4 shadow-inner" style={{ minHeight: '600px' }}>
       {isCustom ? (
         // ── CUSTOM DASHBOARD RENDER ──
-        <div className="relative bg-gray-100 rounded-xl border border-gray-200 overflow-auto p-4 min-h-[600px] shadow-inner">
+        <div className="relative">
           <div className="flex items-center gap-2 mb-4 text-xs font-bold text-gray-400 uppercase tracking-widest pl-2">
             <BarChart3 className="w-3.5 h-3.5" /> Diseño Personalizado
           </div>
+
           
           <div className="relative" style={{ minHeight: '1000px' }}>
             {config.components.map((comp: any, idx: number) => {
@@ -300,6 +456,7 @@ export default function DashboardDetail({ dashboard, onBack }: DashboardDetailPr
           </div>
         </>
       )}
+      </div>
     </div>
   );
 }

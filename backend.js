@@ -261,6 +261,69 @@ async function initDatabase() {
       )
     `);
 
+    await createIfNotExists('DashboardFilterAccess', `
+      CREATE TABLE DashboardFilterAccess (
+        id           UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+        dashboardId  NVARCHAR(200) NOT NULL,
+        userId       VARCHAR(50) NOT NULL,
+        filtersJSON  NVARCHAR(MAX),  -- JSON: { "Sucursal": ["NAVA","CARR"], "Area": ["ALL"] }
+        createdAt    DATETIME DEFAULT GETDATE(),
+        updatedAt    DATETIME DEFAULT GETDATE()
+      )
+    `);
+
+    // Create AI Chat Logs table if not exists
+    await sysPool.request().query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='ai_chat_logs' and xtype='U')
+      CREATE TABLE ai_chat_logs (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        session_id VARCHAR(100),
+        role VARCHAR(50),
+        message_text NVARCHAR(MAX),
+        created_at DATETIME DEFAULT GETDATE()
+      )
+    `);
+
+    // Create Rhythm Tracking Cards table if not exists
+    await createIfNotExists('rhythm_cards', `
+      CREATE TABLE rhythm_cards (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        area VARCHAR(100),
+        category VARCHAR(100),
+        title NVARCHAR(255),
+        description NVARCHAR(MAX),
+        status VARCHAR(50) DEFAULT 'Pendiente',
+        sucursal VARCHAR(100),
+        created_by NVARCHAR(150),
+        start_date DATETIME,
+        end_date DATETIME,
+        created_at DATETIME DEFAULT GETDATE()
+      )
+    `);
+    // Add new columns to existing rhythm_cards table if they don't exist
+    await sysPool.request().query(`
+      IF COL_LENGTH('rhythm_cards', 'sucursal') IS NULL
+        ALTER TABLE rhythm_cards ADD sucursal VARCHAR(100);
+    `);
+    await sysPool.request().query(`
+      IF COL_LENGTH('rhythm_cards', 'created_by') IS NULL
+        ALTER TABLE rhythm_cards ADD created_by NVARCHAR(150);
+    `);
+    // Create card_comments table
+    await createIfNotExists('card_comments', `
+      CREATE TABLE card_comments (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        card_id INT NOT NULL,
+        user_name NVARCHAR(150),
+        comment_text NVARCHAR(MAX),
+        mentions NVARCHAR(MAX),
+        created_at DATETIME DEFAULT GETDATE()
+      )
+    `);
+
+
+    console.log('✅ Global DB Initialized successfully.');
+
     // Insert default Admin user if table is empty
     const { recordset } = await sysPool.request().query('SELECT COUNT(*) as cnt FROM Users');
     if (recordset[0].cnt === 0) {
@@ -299,7 +362,114 @@ async function initDatabase() {
 }
 initDatabase();
 
-// ── Token store (in-memory for local dev) ─────────────────────────────────
+// ── AI Chat Persistence Endpoint ───────────────────────────────────────────
+app.post('/api/ai-chat-logs', async (req, res) => {
+  const { session_id, role, text } = req.body;
+  if (!role || !text) return res.status(400).json({ error: 'Missing role or text' });
+  
+  try {
+    const pool = await ensureSysConnection();
+    await pool.request()
+      .input('session_id', sql.VarChar, session_id || 'default_session')
+      .input('role', sql.VarChar, role)
+      .input('text', sql.NVarChar, text)
+      .query(`INSERT INTO ai_chat_logs (session_id, role, message_text) VALUES (@session_id, @role, @text)`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Failed to save chat log to DB:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Rhythm Board (Tarjetas de Seguimiento) Endpoints ──────────────────────
+app.get('/api/rhythm-cards', async (req, res) => {
+  try {
+    const pool = await ensureSysConnection();
+    const { recordset } = await pool.request().query('SELECT * FROM rhythm_cards ORDER BY created_at DESC');
+    res.json({ data: recordset });
+  } catch (err) {
+    console.error('❌ Failed to fetch rhythm cards:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/rhythm-cards', async (req, res) => {
+  const { area, category, title, description, start_date, end_date, status, sucursal, created_by } = req.body;
+  try {
+    const pool = await ensureSysConnection();
+    await pool.request()
+      .input('area', sql.VarChar, area)
+      .input('category', sql.VarChar, category)
+      .input('title', sql.NVarChar, title)
+      .input('description', sql.NVarChar, description || '')
+      .input('status', sql.VarChar, status || 'Pendiente')
+      .input('sucursal', sql.VarChar, sucursal || '')
+      .input('created_by', sql.NVarChar, created_by || 'Sistema')
+      .input('start_date', sql.DateTime, start_date ? new Date(start_date) : new Date())
+      .input('end_date', sql.DateTime, end_date ? new Date(end_date) : new Date())
+      .query(`
+        INSERT INTO rhythm_cards (area, category, title, description, status, sucursal, created_by, start_date, end_date) 
+        VALUES (@area, @category, @title, @description, @status, @sucursal, @created_by, @start_date, @end_date)
+      `);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Failed to create rhythm card:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/rhythm-cards/:id', async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+  try {
+    const pool = await ensureSysConnection();
+    await pool.request()
+      .input('id', sql.Int, parseInt(id))
+      .input('status', sql.VarChar, status)
+      .query('UPDATE rhythm_cards SET status = @status WHERE id = @id');
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Failed to update rhythm card:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── SuperUsers list (for @mentions) ───────────────────────────────────────────
+app.get('/api/superusers', async (req, res) => {
+  try {
+    const pool = await ensureSysConnection();
+    const { recordset } = await pool.request()
+      .query("SELECT firstName, lastName FROM Users WHERE role = 'superuser'");
+    res.json({ data: recordset.map(u => `${u.firstName} ${u.lastName}`.trim()) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Card Comments Endpoints ──────────────────────────────────────────────────
+app.get('/api/rhythm-cards/:id/comments', async (req, res) => {
+  try {
+    const pool = await ensureSysConnection();
+    const { recordset } = await pool.request()
+      .input('card_id', sql.Int, parseInt(req.params.id))
+      .query('SELECT * FROM card_comments WHERE card_id = @card_id ORDER BY created_at ASC');
+    res.json({ data: recordset });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/rhythm-cards/:id/comments', async (req, res) => {
+  const { user_name, comment_text, mentions } = req.body;
+  try {
+    const pool = await ensureSysConnection();
+    await pool.request()
+      .input('card_id', sql.Int, parseInt(req.params.id))
+      .input('user_name', sql.NVarChar, user_name || 'Anónimo')
+      .input('comment_text', sql.NVarChar, comment_text)
+      .input('mentions', sql.NVarChar, JSON.stringify(mentions || []))
+      .query('INSERT INTO card_comments (card_id, user_name, comment_text, mentions) VALUES (@card_id, @user_name, @comment_text, @mentions)');
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Shared Helper function: Run Query on a connection ─────────────────────────────────
 const tokens = new Map(); // token → { userId, exp }
 const magicTokens = new Map(); // one-time magic link token → { userId, exp }
 
@@ -535,6 +705,72 @@ app.put('/api/users/:id/permissions', requireToken, requireAdmin, async (req, re
   }
 });
 
+// ── Dashboard Filter Access ────────────────────────────────────────────────
+
+// GET  /api/dashboard-access/:dashboardId  → list all user assignments
+app.get('/api/dashboard-access/:dashboardId', requireToken, requireAdmin, async (req, res) => {
+  try {
+    const result = await sysPool.request()
+      .input('dashId', sql.NVarChar, req.params.dashboardId)
+      .query(`
+        SELECT dfa.id, dfa.userId, dfa.filtersJSON, dfa.updatedAt,
+               u.firstName, u.lastName, u.email
+        FROM DashboardFilterAccess dfa
+        LEFT JOIN Users u ON u.id = dfa.userId
+        WHERE dfa.dashboardId = @dashId
+      `);
+    res.json({ success: true, access: result.recordset.map(r => ({
+      id: r.id, userId: r.userId,
+      firstName: r.firstName, lastName: r.lastName, email: r.email,
+      filters: r.filtersJSON ? JSON.parse(r.filtersJSON) : {}
+    }))});
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET  /api/dashboard-access/:dashboardId/user/:userId  → get MY filters (client)
+app.get('/api/dashboard-access/:dashboardId/user/:userId', requireToken, async (req, res) => {
+  try {
+    const result = await sysPool.request()
+      .input('dashId', sql.NVarChar, req.params.dashboardId)
+      .input('uid', sql.VarChar, req.params.userId)
+      .query('SELECT filtersJSON FROM DashboardFilterAccess WHERE dashboardId = @dashId AND userId = @uid');
+    if (!result.recordset.length) return res.json({ success: true, filters: null });
+    res.json({ success: true, filters: JSON.parse(result.recordset[0].filtersJSON || '{}') });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT  /api/dashboard-access  → upsert filter access
+app.put('/api/dashboard-access', requireToken, requireAdmin, async (req, res) => {
+  const { dashboardId, userId, filters } = req.body;
+  if (!dashboardId || !userId) return res.status(400).json({ error: 'dashboardId and userId are required' });
+  try {
+    await sysPool.request()
+      .input('dashId', sql.NVarChar, dashboardId)
+      .input('uid', sql.VarChar, userId)
+      .input('filters', sql.NVarChar, JSON.stringify(filters || {}))
+      .query(`
+        IF EXISTS (SELECT 1 FROM DashboardFilterAccess WHERE dashboardId = @dashId AND userId = @uid)
+          UPDATE DashboardFilterAccess SET filtersJSON = @filters, updatedAt = GETDATE()
+            WHERE dashboardId = @dashId AND userId = @uid
+        ELSE
+          INSERT INTO DashboardFilterAccess (dashboardId, userId, filtersJSON)
+            VALUES (@dashId, @uid, @filters)
+      `);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DELETE /api/dashboard-access/:dashboardId/user/:userId  → remove access
+app.delete('/api/dashboard-access/:dashboardId/user/:userId', requireToken, requireAdmin, async (req, res) => {
+  try {
+    await sysPool.request()
+      .input('dashId', sql.NVarChar, req.params.dashboardId)
+      .input('uid', sql.VarChar, req.params.userId)
+      .query('DELETE FROM DashboardFilterAccess WHERE dashboardId = @dashId AND userId = @uid');
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // PUT /api/users/:id/password
 app.put('/api/users/:id/password', requireToken, async (req, res) => {
   const { password, mustChangePassword } = req.body;
@@ -551,6 +787,57 @@ app.put('/api/users/:id/password', requireToken, async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     console.error('[/api/users/password PUT]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /api/filter-values ─────────────────────────────────────────────────
+// Returns DISTINCT values for a given field from a data source.
+// Body: { connectionId, fieldName, baseQuery? }
+app.post('/api/filter-values', requireToken, requireAdmin, async (req, res) => {
+  const { connectionId, fieldName, baseQuery } = req.body;
+  if (!connectionId || !fieldName) {
+    return res.status(400).json({ error: 'connectionId and fieldName are required' });
+  }
+  try {
+    // Resolve connection credentials
+    const connRow = await sysPool.request()
+      .input('cid', sql.NVarChar, connectionId)
+      .query('SELECT * FROM DevSources WHERE id = @cid');
+    if (!connRow.recordset.length) return res.status(404).json({ error: 'Connection not found' });
+    const conn = connRow.recordset[0];
+
+    const mssql = require('mssql');
+    const pool = await mssql.connect({
+      server: conn.host, database: conn.database,
+      user: conn.username, password: conn.password,
+      options: { encrypt: false, trustServerCertificate: true },
+      connectionTimeout: 8000
+    });
+
+    // If we have a base query, wrap it; otherwise query the table directly
+    let sqlStr;
+    const safeField = `[${fieldName.replace(/]/g, ']]')}]`;
+    if (baseQuery && baseQuery.trim()) {
+      let cleanQuery = baseQuery.trim();
+      // Remove trailing ORDER BY to avoid SQL Server derived table errors
+      const orderMatch = cleanQuery.match(/\s+ORDER\s+BY\s+[\s\S]+$/i);
+      if (orderMatch && !cleanQuery.match(/\s+TOP\s+/i)) {
+        cleanQuery = cleanQuery.substring(0, orderMatch.index);
+      }
+      // Wrap original query and SELECT DISTINCT field
+      sqlStr = `SELECT DISTINCT TOP 500 ${safeField} FROM (${cleanQuery}) AS _base WHERE ${safeField} IS NOT NULL ORDER BY ${safeField}`;
+    } else {
+      return res.status(400).json({ error: 'baseQuery is required' });
+    }
+
+    const result = await pool.request().query(sqlStr);
+    await pool.close();
+
+    const values = result.recordset.map((r) => String(Object.values(r)[0])).filter(Boolean);
+    res.json({ success: true, values });
+  } catch (err) {
+    console.error('[/api/filter-values]', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -686,16 +973,58 @@ app.post('/api/dev/canvas', requireToken, async (req, res) => {
 
 app.post('/api/dev/published', requireToken, async (req, res) => {
   try {
+    const dashboard = req.body;
     const pool = await ensureSysConnection();
     await pool.request()
-      .input('id', sql.VarChar, req.body.id)
-      .input('data', sql.NVarChar, JSON.stringify(req.body))
+      .input('id', sql.VarChar, dashboard.id)
+      .input('data', sql.NVarChar, JSON.stringify(dashboard))
       .query(`
         IF EXISTS (SELECT * FROM PublishedDashboards WHERE id = @id)
           UPDATE PublishedDashboards SET data = @data WHERE id = @id
         ELSE
           INSERT INTO PublishedDashboards (id, data) VALUES (@id, @data)
       `);
+
+    // --- AUTO-PUBLISH NEW WIDGETS TO MARKETPLACE ---
+    if (Array.isArray(dashboard.components)) {
+      for (const comp of dashboard.components) {
+        if (!comp.isMarketplace && comp.name) {
+          const authorId = comp.authorId || req.session.userId || 'dev';
+          const visualType = comp.visualType || 'table';
+          const category = comp.category || 'GLOBAL';
+          const name = comp.name;
+
+          const configJSON = JSON.stringify({ visualType, code: comp.code || '', mapping: {} });
+          const executionJSON = JSON.stringify({
+            dataSourceId: comp.connectionId || '',
+            rawQuery: comp.query || '',
+            visualType,
+            code: comp.code || ''
+          });
+
+          await pool.request()
+            .input('name', sql.NVarChar, name)
+            .input('category', sql.NVarChar, category)
+            .input('ownerId', sql.VarChar, authorId)
+            .input('originId', sql.VarChar, dashboard.id)
+            .input('desc', sql.NVarChar, 'Auto-published from dev submission')
+            .input('configJSON', sql.NVarChar, configJSON)
+            .input('execJSON', sql.NVarChar, executionJSON)
+            .query(`
+              IF NOT EXISTS (SELECT * FROM Marketplace_Widgets WHERE name = @name AND isDeleted = 0)
+              BEGIN
+                DECLARE @newWidgetId UNIQUEIDENTIFIER = NEWID();
+                INSERT INTO Marketplace_Widgets (id, name, category, ownerId, originId, description)
+                VALUES (@newWidgetId, @name, @category, @ownerId, @originId, @desc);
+                
+                INSERT INTO Marketplace_Widget_Versions (widgetId, versionTag, configJSON, executionJSON)
+                VALUES (@newWidgetId, '1.0.0', @configJSON, @execJSON);
+              END
+            `);
+        }
+      }
+    }
+
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -781,7 +1110,8 @@ app.delete('/api/dev/published/:id', requireToken, async (req, res) => {
 app.post('/api/dev/system', requireToken, async (req, res) => {
   const { areaId, dashId, dashboard } = req.body;
   try {
-    await sysPool.request()
+    const pool = await ensureSysConnection();
+    await pool.request()
       .input('areaId', sql.VarChar, areaId)
       .input('dashId', sql.VarChar, dashId)
       .input('data', sql.NVarChar, JSON.stringify(dashboard))
@@ -791,6 +1121,7 @@ app.post('/api/dev/system', requireToken, async (req, res) => {
         ELSE
           INSERT INTO SystemDashboards (areaId, dashId, data) VALUES (@areaId, @dashId, @data)
       `);
+
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1169,9 +1500,11 @@ app.get('/api/marketplace/widgets', requireToken, async (req, res) => {
   try {
     const pool = await ensureSysConnection();
     const result = await pool.request().query(`
-      SELECT w.*, v.versionTag, v.configJSON, v.contractJSON, v.executionJSON, v.versionId
+      SELECT w.*, v.versionTag, v.configJSON, v.contractJSON, v.executionJSON, v.versionId,
+             COALESCE(u.firstName + ' ' + u.lastName, 'Desarrollador') as authorName
       FROM Marketplace_Widgets w
       JOIN Marketplace_Widget_Versions v ON w.id = v.widgetId
+      LEFT JOIN Users u ON w.ownerId = u.id
       WHERE w.isDeleted = 0
       ORDER BY w.createdAt DESC
     `);

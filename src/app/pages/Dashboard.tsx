@@ -3,7 +3,8 @@ import Sidebar from "../components/Sidebar";
 import Header from "../components/Header";
 import DashboardCard from "../components/DashboardCard";
 import DashboardDetail from "../components/DashboardDetail";
-import { Megaphone, TrendingUp, Calendar, Users, Pin } from "lucide-react";
+import FPAStudio from "../components/FPAStudio";
+import { Megaphone, TrendingUp, Calendar, Users, Pin, Zap } from "lucide-react";
 
 // Datos de ejemplo para anuncios
 const announcements = [
@@ -70,6 +71,7 @@ import { useDataStore, AREA_NAMES } from "../hooks/useDataStore";
 export default function Dashboard() {
   const [selectedArea, setSelectedArea] = useState<string | null>(null);
   const [selectedDashboard, setSelectedDashboard] = useState<any | null>(null);
+  const [showFPAStudio, setShowFPAStudio] = useState(false);
   const { user, recordActivity } = useAuth();
   const { systemDashboards } = useDataStore();
 
@@ -90,26 +92,58 @@ export default function Dashboard() {
     return user.permissions.dashboards.includes(path);
   });
 
+  // Dynamic notifications for assigned dashboards
+  const assignmentNotifications = user?.permissions.dashboards.map((path, idx) => {
+    const [areaId, dashId] = path.split('/');
+    const areaDashboards = systemDashboards[areaId] || [];
+    const dashboard = areaDashboards.find(d => d.id === dashId);
+    if (!dashboard) return null;
+
+    return {
+      id: `assign-${idx}`,
+      title: "Nuevo Tablero Asignado",
+      description: `Se te ha asignado el tablero "${dashboard.title}" en el área de ${AREA_NAMES[areaId] || areaId}.`,
+      date: "Hoy",
+      category: "Novedad",
+      isPinned: true,
+      icon: TrendingUp,
+      color: "bg-indigo-600",
+      action: () => {
+        setSelectedArea(areaId);
+        setSelectedDashboard(dashboard);
+      }
+    };
+  }).filter(Boolean).slice(0, 3); // Show top 3 as novelty
+
+  const allAnnouncements = [...(assignmentNotifications as any), ...announcements];
+
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="flex h-screen bg-gray-50 print:h-auto print:overflow-visible">
       {/* Sidebar */}
-      <Sidebar 
-        selectedArea={selectedArea} 
-        onAreaSelect={(area) => {
-          setSelectedArea(area);
-          setSelectedDashboard(null); // Clean up the inner view bug
-        }} 
-      />
+      {!showFPAStudio && (
+        <Sidebar 
+          selectedArea={selectedArea} 
+          onAreaSelect={(area) => {
+            setSelectedArea(area);
+            setSelectedDashboard(null); // Clean up the inner view bug
+            setShowFPAStudio(false);
+          }} 
+        />
+      )}
 
       {/* Contenido principal */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden print:overflow-visible">
         {/* Header */}
-        <Header />
+        <div className="print:hidden">
+          <Header />
+        </div>
 
         {/* Área de contenido */}
-        <main className="flex-1 overflow-y-auto p-6">
-          <div className="max-w-6xl mx-auto">
-            {selectedDashboard ? (
+        <main className={`flex-1 overflow-y-auto print:overflow-visible ${showFPAStudio ? '' : 'p-6'}`}>
+          <div className={showFPAStudio ? 'h-full print:h-auto' : 'max-w-6xl mx-auto'}>
+            {showFPAStudio ? (
+              <FPAStudio />
+            ) : selectedDashboard ? (
               // Vista detallada del dashboard con gráficos
               <DashboardDetail
                 dashboard={selectedDashboard}
@@ -159,14 +193,30 @@ export default function Dashboard() {
               // Vista de anuncios por defecto
               <>
                 {/* Mensaje de bienvenida */}
-                <div className="bg-gradient-to-r from-[#E85D5D] to-[#DC2626] rounded-2xl p-8 mb-6 text-white">
-                  <h1 className="text-3xl font-bold mb-2">
-                    ¡Bienvenido al Sistema de Análisis Empresarial!
-                  </h1>
-                  <p className="text-red-100 text-lg">
-                    Accede a los dashboards de cada área desde el menú lateral para visualizar datos y
-                    métricas en tiempo real.
-                  </p>
+                <div className="bg-gradient-to-r from-[#E85D5D] to-[#DC2626] rounded-2xl p-8 mb-6 text-white relative overflow-hidden">
+                  <div className="relative z-10">
+                    <h1 className="text-3xl font-bold mb-2">
+                      ¡Bienvenido al Sistema de Análisis Empresarial!
+                    </h1>
+                    <p className="text-red-100 text-lg mb-6 max-w-2xl">
+                      Accede a los dashboards de cada área desde el menú lateral para visualizar datos y
+                      métricas en tiempo real.
+                    </p>
+                    
+                    {(user?.role === 'superuser' || user?.role === 'extrauser') && (
+                      <button 
+                        onClick={() => setShowFPAStudio(true)}
+                        className="bg-white text-[#DC2626] hover:bg-red-50 flex items-center gap-2 px-6 py-3 rounded-lg font-bold shadow-lg transition-all transform hover:scale-105 mt-4"
+                      >
+                        <Zap className="w-5 h-5" />
+                        Abrir FP&A Studio ({user?.role === 'superuser' ? 'SuperUSER' : 'ExtraUser'})
+                      </button>
+                    )}
+                  </div>
+                  {/* Decoración gráfica */}
+                  <div className="absolute top-0 right-0 opacity-10">
+                    <TrendingUp className="w-64 h-64 -mt-10 -mr-10" />
+                  </div>
                 </div>
 
                 {/* Estadísticas rápidas */}
@@ -224,7 +274,7 @@ export default function Dashboard() {
                   </div>
 
                   <div className="space-y-4">
-                    {announcements.map((announcement) => {
+                    {allAnnouncements.map((announcement: any) => {
                       const Icon = announcement.icon;
                       return (
                         <div
@@ -266,8 +316,14 @@ export default function Dashboard() {
                                 <span className="inline-flex items-center text-xs font-medium bg-gray-100 text-gray-700 px-3 py-1 rounded-full">
                                   {announcement.category}
                                 </span>
-                                <button className="text-sm text-[#E85D5D] hover:text-[#DC2626] font-medium">
-                                  Leer más →
+                                <button 
+                                  onClick={() => {
+                                    if ((announcement as any).action) (announcement as any).action();
+                                    else alert("Próximamente más detalles...");
+                                  }}
+                                  className="text-sm text-[#E85D5D] hover:text-[#DC2626] font-medium"
+                                >
+                                  {(announcement as any).action ? 'Ir al tablero →' : 'Leer más →'}
                                 </button>
                               </div>
                             </div>

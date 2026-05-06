@@ -48,13 +48,16 @@ export default function Sidebar({ selectedArea, onAreaSelect }: SidebarProps) {
     <div className="w-64 bg-gray-900 text-white h-screen flex flex-col">
       {/* Logo */}
       <div className="p-6 border-b border-gray-800">
-        <div className="flex items-center gap-3">
+        <button 
+          onClick={() => onAreaSelect('')} 
+          className="flex items-center gap-3 hover:opacity-80 transition-opacity text-left w-full"
+        >
           <BarChart3 className="w-8 h-8 text-[#E85D5D]" />
           <div>
             <h1 className="font-bold text-lg">ATR Analytics Pro</h1>
             <p className="text-xs text-gray-400">Sistema de Análisis</p>
           </div>
-        </div>
+        </button>
       </div>
 
       {/* Áreas de negocio */}

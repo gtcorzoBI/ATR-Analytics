@@ -55,16 +55,47 @@ export default React.memo(function LiveWidget({
   const runtimeError = errors[effectiveId];
 
   const filteredRows = React.useMemo(() => {
+    // Helper to find a value in a row by field name (case-insensitive and partial match for complex names)
+    const getRowValue = (row: any, fieldName: string) => {
+      if (!row || !fieldName) return undefined;
+      const keys = Object.keys(row);
+      const fnLower = fieldName.toLowerCase().trim();
+      
+      // 1. Exact match
+      const exactMatch = keys.find(k => k.toLowerCase().trim() === fnLower);
+      if (exactMatch) return row[exactMatch];
+      
+      // 2. Compound match (e.g., "Agencia > VIN" or "Table.Agencia")
+      const compoundMatch = keys.find(k => {
+        const kl = k.toLowerCase().trim();
+        return kl.startsWith(fnLower + " ") || kl.startsWith(fnLower + ">") || kl.startsWith(fnLower + ".") ||
+               kl.endsWith(" " + fnLower) || kl.endsWith("." + fnLower) || kl.endsWith(">" + fnLower) ||
+               kl.includes("." + fnLower + ".") || kl.includes(" " + fnLower + " ");
+      });
+
+      if (compoundMatch) {
+        const val = row[compoundMatch];
+        if (typeof val === 'string' && val.includes(' > ')) {
+          // If the value is also compound (e.g. "NAVA > 123"), extract the primary part
+          return val.split(' > ')[0].trim();
+        }
+        return val;
+      }
+      return undefined;
+    };
+
     const filters = (window as any).__dashboardFilters || {};
     let result = rows || [];
+    
     for (const [field, allowed] of Object.entries(filters)) {
       if (!allowed) continue;
+      
       // Date range filter
       if (typeof allowed === 'object' && !Array.isArray(allowed) && (allowed as any).__dateRange) {
         const { from, to } = allowed as any;
         result = result.filter(r => {
-          const val = r[field];
-          if (!val) return false;
+          const val = getRowValue(r, field);
+          if (val === undefined) return true; // Field not in this row, don't filter it out
           const d = new Date(val);
           if (isNaN(d.getTime())) return false;
           if (from && d < new Date(from)) return false;
@@ -75,15 +106,53 @@ export default React.memo(function LiveWidget({
           }
           return true;
         });
-      } else if (Array.isArray(allowed) && allowed.length > 0) {
+      } else if (Array.isArray(allowed)) {
         // Standard multi-value filter
-        // IMPORTANT: Only filter if row has this field, otherwise ignore this filter for this widget
+        // RLS enforcement: intersect user selection with restrictions if they exist
+        const fieldLower = field.toLowerCase().trim();
+        const allRestr = (window as any).__filterAccessRestrictions || {};
+        const restrKey = Object.keys(allRestr).find(k => k.toLowerCase().trim() === fieldLower);
+        const restrictions = restrKey ? allRestr[restrKey] : undefined;
+
+        const isRestricted = Array.isArray(restrictions) && restrictions.length > 0;
+
+        const effectiveAllowed = isRestricted
+          ? (allowed.length > 0 ? allowed.filter(v => (restrictions as string[]).some(r => String(r).toLowerCase().trim() === String(v).toLowerCase().trim())) : restrictions)
+          : allowed;
+
+        if (effectiveAllowed.length === 0 && !isRestricted) continue; // True "All" without restrictions
+
+        // If after intersection no values are left, but there ARE restrictions, use the restrictions
+        const finalAllowed = (effectiveAllowed.length === 0 && isRestricted)
+          ? restrictions
+          : effectiveAllowed;
+
+        const finalAllowedLower = (finalAllowed as string[]).map(v => String(v).toLowerCase().trim());
+
         result = result.filter(r => {
-          if (!(field in r)) return true; // Keep row if field doesn't exist in this table
-          return (allowed as string[]).includes(String(r[field]));
+          const val = getRowValue(r, field);
+          if (val === undefined) return true;
+          return finalAllowedLower.includes(String(val).toLowerCase().trim());
         });
       }
     }
+    
+    // Final RLS pass: for any field that HAS restrictions but NO active filter in UI, apply the restriction
+    const allRestrictions = (window as any).__filterAccessRestrictions || {};
+    const filterKeysLower = Object.keys(filters).map(k => k.toLowerCase().trim());
+
+    Object.entries(allRestrictions).forEach(([field, restrictedVals]) => {
+      const isAlreadyFiltered = filterKeysLower.includes(field.toLowerCase().trim());
+      if (!isAlreadyFiltered && Array.isArray(restrictedVals) && (restrictedVals as any).length > 0) {
+        const restrictedValsLower = (restrictedVals as string[]).map(v => String(v).toLowerCase().trim());
+        result = result.filter(r => {
+          const val = getRowValue(r, field);
+          if (val === undefined) return true;
+          return restrictedValsLower.includes(String(val).toLowerCase().trim());
+        });
+      }
+    });
+
     return result;
   }, [rows, filterTick]);
 

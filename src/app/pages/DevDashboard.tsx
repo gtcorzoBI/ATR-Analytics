@@ -28,6 +28,8 @@ interface DataTab {
   query: string; code: string;
   rows: any[]; columns: string[];
   loading: boolean; error: string; warning?: string; queryRan: boolean;
+  visualType?: string;
+  visualMapping?: Record<string, any>;
 }
 
 const API = "http://localhost:3001";
@@ -159,11 +161,24 @@ export default function DevDashboard() {
   }, [viewMode, currentDraftId, saveDraft]); // eslint-disable-line
 
   const [isDragging, setIsDragging] = useState(false);
-  const [activeVisualType, setActiveVisualType] = useState<string | null>(null);
-  
+
+  // ── Per-tab visual type and mapping — derived from activeTab ──────────
+  const activeVisualType = activeTab?.visualType || null;
+  const visualMapping: VisualMappingState = (activeTab?.visualMapping as VisualMappingState) || getEmptyMapping();
+
+  // Writers that persist into the active tab
+  const setActiveVisualType = (type: string | null) => {
+    if (!activeTabId) return;
+    patchTab(activeTabId, { visualType: type ?? undefined, visualMapping: getEmptyMapping() });
+  };
+
+  const setVisualMapping = (mapping: VisualMappingState) => {
+    if (!activeTabId) return;
+    patchTab(activeTabId, { visualMapping: mapping });
+  };
+
   const [relNodes, setRelNodes] = useState<NodeDef[]>([]);
   const [relEdges, setRelEdges] = useState<EdgeDef[]>([]);
-  const [visualMapping, setVisualMapping] = useState<VisualMappingState>(getEmptyMapping());
 
   // Sync trackedTables from Right Panel to Relation Canvas nodes automatically
   useEffect(() => {
@@ -200,8 +215,6 @@ export default function DevDashboard() {
        // Clear in-memory UI state
        setTabs([]);
        setActiveTabId(null);
-       setActiveVisualType(null);
-       setVisualMapping(getEmptyMapping());
        setTrackedTables([]);
        setRelNodes([]);
        setRelEdges([]);
@@ -615,6 +628,7 @@ export default function DevDashboard() {
       code: tab.code, 
       query: tab.query,
       connectionId: tab.connectionId,
+      visualType: activeVisualType || tab.visualType || 'table',
       rows: tab.rows, 
       columns: tab.columns 
     };

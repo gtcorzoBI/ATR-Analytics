@@ -187,6 +187,24 @@ function ChartCard({ widget, isFavorite, onToggleFavorite, onAdd, isOwner }: any
     else if (nm.includes('dispersion') || nm.includes('scatter')) visualType = 'scatter';
   }
 
+  // 5) Last resort: scan the actual JSX/code for recharts component names
+  if (visualType === 'bar') {
+    try {
+      const cfg = typeof widget.configJSON === 'string' ? JSON.parse(widget.configJSON) : (widget.configJSON || {});
+      const exec = typeof widget.executionJSON === 'string' ? JSON.parse(widget.executionJSON) : (widget.executionJSON || {});
+      const code = cfg.code || exec.code || '';
+      if (code.includes('PieChart') && code.includes('innerRadius')) visualType = 'donut';
+      else if (code.includes('PieChart')) visualType = 'pie';
+      else if (code.includes('ScatterChart')) visualType = 'scatter';
+      else if (code.includes('AreaChart')) visualType = 'area';
+      else if (code.includes('LineChart')) visualType = 'line';
+      else if (code.includes('layout="vertical"') || code.includes("layout='vertical'")) visualType = 'bar-h';
+      else if (code.includes('stackId')) visualType = 'bar-stacked';
+      else if (code.includes('ComposedChart')) visualType = 'combo';
+      else if (code.includes('thead') || code.includes('<table') || code.includes('<tr')) visualType = 'table';
+    } catch(e) {}
+  }
+
   const typeIcon = TYPE_ICON_MAP[visualType] || '📊';
   const authorLabel = widget.authorName || widget.ownerName ||
     (isOwner ? 'Tú' : (widget.ownerId ? `Dev ${String(widget.ownerId).slice(0,6)}` : 'Desarrollador'));
@@ -247,9 +265,16 @@ export default function MarketplaceDrawer({ isOpen, onClose, onInject }: Marketp
   const { widgets, fetchWidgets, loading } = useMarketplaceStore();
   const { user } = useAuth() as any;
   
-  const [activeTab, setActiveTab] = useState<'global' | 'favorites' | 'own'>('global');
+  const [activeTab, setActiveTab] = useState<'all' | 'favorites' | 'own'>('all');
   const [searchQuery, setSearchQuery] = useState("");
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [selectedCategory, setSelectedCategory] = useState('GLOBAL');
+
+  const CATEGORIES = [
+    'GLOBAL', 'COMERCIAL', 'FINANCIERO', 'ADMINISTRATIVO', 'POSVENTA', 
+    'MARKETING', 'RECURSOS HUMANOS', 'COMISIONES', 'CALIDAD'
+  ];
+
 
   useEffect(() => {
     if (isOpen) fetchWidgets();
@@ -270,7 +295,14 @@ export default function MarketplaceDrawer({ isOpen, onClose, onInject }: Marketp
                           (w.category && w.category.toLowerCase().includes(searchLow));
 
     if (!matchesSearch) return false;
+    
+    // GLOBAL = show everything; otherwise filter by exact area
+    if (selectedCategory !== 'GLOBAL') {
+      const wCat = (w.category || 'GLOBAL').toUpperCase().trim();
+      if (wCat !== selectedCategory.toUpperCase().trim()) return false;
+    }
 
+    // Filter by Tab (favorites / own)
     if (activeTab === 'favorites') return favorites.has(w.id);
     if (activeTab === 'own') return user?.id && w.ownerId === user.id;
     return true;
@@ -305,48 +337,72 @@ export default function MarketplaceDrawer({ isOpen, onClose, onInject }: Marketp
             </button>
           </header>
 
-          <div className="flex-1 overflow-y-auto">
-            <div className="max-w-7xl mx-auto w-full">
-              {/* Controles: Búsqueda y Tabs */}
-              <div className="sticky top-0 bg-slate-50 z-10 pt-8 pb-4 px-6 lg:px-12 space-y-6">
-                <div className="relative max-w-2xl">
-                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-                  <input
-                    type="text"
-                    placeholder="Buscar por nombre, tipo o autor..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full pl-12 pr-4 py-4 bg-white border border-slate-200 rounded-[20px] shadow-sm focus:outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 transition-all font-medium text-slate-800 placeholder-slate-400"
-                  />
-                </div>
-
-                <div className="flex gap-8 border-b border-slate-200">
-                  <button
-                    onClick={() => setActiveTab('global')}
-                    className={`pb-4 flex items-center gap-2 border-b-2 transition-all font-bold text-sm ${
-                      activeTab === 'global' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-800'
-                    }`}
-                  >
-                    <Store className="w-4 h-4" /> Global
-                  </button>
-                  <button
-                    onClick={() => setActiveTab('favorites')}
-                    className={`pb-4 flex items-center gap-2 border-b-2 transition-all font-bold text-sm ${
-                      activeTab === 'favorites' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-800'
-                    }`}
-                  >
-                    <Heart className={`w-4 h-4 ${activeTab === 'favorites' ? 'fill-indigo-600 text-indigo-600' : ''}`} /> Favoritos ({favorites.size})
-                  </button>
-                  <button
-                    onClick={() => setActiveTab('own')}
-                    className={`pb-4 flex items-center gap-2 border-b-2 transition-all font-bold text-sm ${
-                      activeTab === 'own' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-800'
-                    }`}
-                  >
-                    <User className="w-4 h-4" /> Propios
-                  </button>
+          <div className="flex-1 overflow-hidden flex">
+            {/* Sidebar de Áreas */}
+            <aside className="w-64 bg-white border-r border-slate-200 shrink-0 overflow-y-auto flex flex-col z-20">
+              <div className="p-6">
+                <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-4">Áreas de Negocio</h3>
+                <div className="space-y-1">
+                  {CATEGORIES.map(cat => (
+                    <button
+                      key={cat}
+                      onClick={() => setSelectedCategory(cat)}
+                      className={`w-full text-left px-4 py-3 rounded-xl text-xs font-bold transition-all ${
+                        selectedCategory === cat 
+                          ? 'bg-indigo-50 text-indigo-700 shadow-sm' 
+                          : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                      }`}
+                    >
+                      {cat}
+                    </button>
+                  ))}
                 </div>
               </div>
+            </aside>
+
+            {/* Main Content */}
+            <div className="flex-1 overflow-y-auto bg-slate-50">
+              <div className="max-w-7xl mx-auto w-full">
+                {/* Controles: Búsqueda y Tabs */}
+                <div className="sticky top-0 bg-slate-50 z-10 pt-8 pb-4 px-6 lg:px-12 space-y-6">
+                  <div className="relative max-w-2xl">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+                    <input
+                      type="text"
+                      placeholder={`Buscar en ${selectedCategory}...`}
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full pl-12 pr-4 py-4 bg-white border border-slate-200 rounded-[20px] shadow-sm focus:outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 transition-all font-medium text-slate-800 placeholder-slate-400"
+                    />
+                  </div>
+
+                  <div className="flex gap-8 border-b border-slate-200">
+                    <button
+                      onClick={() => setActiveTab('all')}
+                      className={`pb-4 flex items-center gap-2 border-b-2 transition-all font-bold text-sm ${
+                        activeTab === 'all' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      <Store className="w-4 h-4" /> Todos
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('favorites')}
+                      className={`pb-4 flex items-center gap-2 border-b-2 transition-all font-bold text-sm ${
+                        activeTab === 'favorites' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      <Heart className={`w-4 h-4 ${activeTab === 'favorites' ? 'fill-indigo-600 text-indigo-600' : ''}`} /> Favoritos ({favorites.size})
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('own')}
+                      className={`pb-4 flex items-center gap-2 border-b-2 transition-all font-bold text-sm ${
+                        activeTab === 'own' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      <User className="w-4 h-4" /> Propios
+                    </button>
+                  </div>
+                </div>
 
               {/* Grid de Gráficos */}
               <div className="px-6 lg:px-12 pb-24 pt-4">
@@ -380,6 +436,7 @@ export default function MarketplaceDrawer({ isOpen, onClose, onInject }: Marketp
                     ))}
                   </div>
                 )}
+              </div>
               </div>
             </div>
           </div>

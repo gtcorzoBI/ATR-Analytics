@@ -5,6 +5,7 @@ import LiveWidget from "./LiveWidget";
 import { useMarketplaceStore } from "../hooks/useMarketplaceStore";
 import InjectedWidget from "./InjectedWidget";
 import MarketplaceDrawer from "./MarketplaceDrawer";
+import { useAuth } from "../context/AuthContext";
 
 interface SavedComponent {
   id: string;
@@ -43,6 +44,8 @@ export default function DashboardBuilder({ components, connections, dark, onClos
   const border = dark ? "#1e293b" : "#e2e8f0";
   const text = dark ? "#f0f6fc" : "#1e293b";
   const muted = dark ? "#8b949e" : "#94a3b8";
+
+  const { user } = useAuth() as any;
 
   // ── Canvas items ────────────────────────────────────────────────────────
   const { devCanvas = [], saveDevCanvas } = useDataStore() as any;
@@ -169,24 +172,12 @@ export default function DashboardBuilder({ components, connections, dark, onClos
 
   const onMouseUp = useCallback(() => {
     if (activeId) {
-      const activeItem = items.find(it => it.instanceId === activeId);
       setActiveId(null);
       setIsResizing(false);
-
-      if (activeItem) {
-        if (activeItem.isMarketplace) {
-          // Sync back to marketplace store
-          useMarketplaceStore.getState().updateInstanceProps(activeId, {
-            position: { x: activeItem.x, y: activeItem.y, w: activeItem.w, h: activeItem.h }
-          });
-        } else {
-          // Sync to standard devCanvas
-          const legacyItems = items.filter(it => !it.isMarketplace);
-          saveDevCanvas(legacyItems);
-        }
-      }
+      // Removed the logic that wiped out marketplace widgets or synced to a separate store.
+      // The onMouseMove already calls saveDevCanvas(updated) which preserves everything perfectly.
     }
-  }, [activeId, items, saveDevCanvas]);
+  }, [activeId]);
 
   useEffect(() => {
     if (activeId) {
@@ -205,6 +196,22 @@ export default function DashboardBuilder({ components, connections, dark, onClos
   const [dashName, setDashName] = useState("");
   const [publishing, setPublishing] = useState(false);
   const [published, setPublished] = useState(false);
+  const [componentCategories, setComponentCategories] = useState<Record<string, string>>({});
+
+  const CATEGORIES = [
+    'COMERCIAL', 'FINANCIERO', 'ADMINISTRATIVO', 'POSVENTA', 
+    'MARKETING', 'RECURSOS HUMANOS', 'COMISIONES', 'CALIDAD'
+  ];
+
+  const unassignedComponents = items.filter(it => {
+    if (it.isMarketplace) return false;
+    // If the developer dragged a local component that is ALREADY registered in the marketplace,
+    // we don't ask for its area again.
+    const existsInMarketplace = widgets.some(w => w.name.toLowerCase() === it.name.toLowerCase());
+    return !existsInMarketplace;
+  });
+  
+  const allAssigned = unassignedComponents.every(comp => componentCategories[comp.instanceId]);
 
   // Auto-close after successful publish
   useEffect(() => {
@@ -217,7 +224,7 @@ export default function DashboardBuilder({ components, connections, dark, onClos
   }, [published, onClose]);
 
   const handlePublish = async () => {
-    if (!dashName) return;
+    if (!dashName || !allAssigned) return;
     setPublishing(true);
     
     try {
@@ -242,11 +249,16 @@ export default function DashboardBuilder({ components, connections, dark, onClos
           // ── Local dev component: carry connection + code ───────────────
           const original = components.find(c => c.id === it.id);
           const connDetails = connections.find(c => c.id === (original?.connectionId || it.connectionId));
+          const existsInMarketplace = widgets.some(w => w.name.toLowerCase() === it.name.toLowerCase());
           
           return { 
             name: it.name,
             instanceId: it.instanceId,
             isMarketplace: false,
+            category: existsInMarketplace ? 'GLOBAL' : (componentCategories[it.instanceId] || 'GLOBAL'),
+            authorId: user?.id,
+            authorName: user?.name,
+            visualType: original?.visualType || it.visualType || 'table',
             code: original?.code || it.code || '', 
             query: original?.query || it.query || '',
             connectionId: original?.connectionId || it.connectionId || '',
@@ -508,7 +520,7 @@ export default function DashboardBuilder({ components, connections, dark, onClos
                   </div>
                 </div>
 
-                <div className="space-y-6">
+                <div className="space-y-6 max-h-[60vh] overflow-y-auto pr-2">
                   <div>
                     <label className="text-xs font-bold opacity-50 block mb-2 px-1">NOMBRE DEL DASHBOARD</label>
                     <input
@@ -520,12 +532,39 @@ export default function DashboardBuilder({ components, connections, dark, onClos
                       style={{ background: dark ? "#0d1117" : "#f8fafc", borderColor: border, color: text }}
                     />
                   </div>
+
+                  {unassignedComponents.length > 0 && (
+                    <div className="space-y-3">
+                      <label className="text-xs font-bold opacity-50 block px-1">ASIGNAR ÁREA A NUEVOS GRÁFICOS ({unassignedComponents.length})</label>
+                      <p className="text-[10px] opacity-70 px-1 -mt-2 mb-3 leading-tight">
+                        Los gráficos nuevos serán evaluados y publicados en el Marketplace Global. Selecciona a qué área pertenecen.
+                      </p>
+                      {unassignedComponents.map(comp => (
+                        <div key={comp.instanceId} className="flex items-center justify-between p-3 rounded-xl border" style={{ borderColor: border, background: dark ? "#111827" : "#fff" }}>
+                          <div className="flex items-center gap-2 overflow-hidden mr-3">
+                            <BarChart3 className="w-4 h-4 text-indigo-500 shrink-0" />
+                            <span className="text-xs font-bold truncate">{comp.name}</span>
+                          </div>
+                          <select
+                            value={componentCategories[comp.instanceId] || ''}
+                            onChange={e => setComponentCategories({ ...componentCategories, [comp.instanceId]: e.target.value })}
+                            className="text-xs border rounded-lg px-2 py-1.5 focus:outline-none focus:border-indigo-500 bg-transparent shrink-0"
+                            style={{ borderColor: border }}
+                          >
+                            <option value="">Seleccionar área...</option>
+                            {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   <div className="rounded-2xl p-4 text-xs leading-relaxed border border-indigo-500/20" style={{ background: dark ? "#111827" : "#eff6ff", color: dark ? "#93c5fd" : "#1e40af" }}>
                     📌 Recuerda que el administrador revisará la **calidad del diseño y la veracidad de los datos** antes de asignarlo a un área y otorgar permisos a los usuarios finales.
                   </div>
                 </div>
 
-                <div className="flex gap-3 mt-8">
+                <div className="flex gap-3 mt-6">
                   <button
                     onClick={() => setShowPublish(false)}
                     className="flex-1 py-3 rounded-2xl font-bold transition opacity-60 hover:opacity-100"
@@ -534,7 +573,7 @@ export default function DashboardBuilder({ components, connections, dark, onClos
                   </button>
                   <button
                     onClick={handlePublish}
-                    disabled={!dashName || publishing}
+                    disabled={!dashName || publishing || !allAssigned}
                     className="flex-[2] bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white py-3 rounded-2xl font-bold transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/20"
                   >
                     {publishing ? <><Loader2 className="w-4 h-4 animate-spin" /> Procesando…</> : "Enviar ahora"}

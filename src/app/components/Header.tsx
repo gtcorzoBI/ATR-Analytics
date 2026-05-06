@@ -27,7 +27,11 @@ export default function Header() {
         {/* Notificaciones */}
         <button className="relative p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors">
           <Bell className="w-5 h-5" />
-          <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span>
+          {(user?.permissions?.dashboards?.length ?? 0) > 0 && (
+            <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full border-2 border-white">
+              {user?.permissions?.dashboards?.length}
+            </span>
+          )}
         </button>
 
         {/* Perfil dropdown */}
@@ -54,15 +58,6 @@ export default function Header() {
                 <p className="text-xs text-gray-500 mt-1 truncate">{user?.email}</p>
               </div>
 
-              <button className="w-full flex items-center gap-3 px-4 py-2 text-gray-700 hover:bg-gray-50 transition-colors">
-                <User className="w-4 h-4" />
-                <span className="text-sm">Mi Perfil</span>
-              </button>
-
-              <button className="w-full flex items-center gap-3 px-4 py-2 text-gray-700 hover:bg-gray-50 transition-colors">
-                <Settings className="w-4 h-4" />
-                <span className="text-sm">Configuración</span>
-              </button>
 
               <div className="border-t border-gray-100 mt-2 pt-2">
                 <button

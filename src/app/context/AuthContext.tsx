@@ -6,7 +6,7 @@ export type UserType = {
   firstName: string;
   lastName: string;
   email: string;
-  role: "admin" | "user" | "dev";
+  role: "admin" | "user" | "dev" | "superuser" | "extrauser";
   agency: string;
   agencies: string[];
   mustChangePassword?: boolean;
@@ -47,7 +47,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const parsedUser = JSON.parse(savedUser);
       setUser(parsedUser);
       setToken(savedToken);
-      
+
       // Attempt to re-verify/re-issue token in case backend restarted
       fetch(`${API}/api/auth/issue`, {
         method: "POST",
@@ -210,6 +210,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem("active_user", JSON.stringify(activeUpdated));
     updateUserActivity(user.id, dashboardTitle);
   };
+
+  // Inactivity timeout (5 minutes)
+  useEffect(() => {
+    if (!user) return;
+
+    let timeoutId: any;
+    const INACTIVITY_TIME = 5 * 60 * 1000; // 5 minutes
+
+    const resetTimer = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        console.log("[AuthContext] User inactive for 5 mins, logging out...");
+        logout();
+      }, INACTIVITY_TIME);
+    };
+
+    // Events to track activity
+    const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'];
+    events.forEach(evt => document.addEventListener(evt, resetTimer));
+
+    resetTimer();
+
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      events.forEach(evt => document.removeEventListener(evt, resetTimer));
+    };
+  }, [user]);
 
   return (
     <AuthContext.Provider

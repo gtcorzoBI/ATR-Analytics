@@ -259,6 +259,29 @@ export const useDataStore = () => {
   return {
     // Auth & Users
     users: internal_users,
+    updateUserActivity: async (userId: string, dashboardTitle: string) => {
+      const now = new Date().toISOString();
+      internal_users = internal_users.map(u => 
+        u.id === userId ? { ...u, lastActiveAt: now, lastDashboardViewed: dashboardTitle } : u
+      );
+      persist("atr_users", internal_users);
+      
+      const token = localStorage.getItem("atr_token");
+      if (token) {
+        try {
+          await fetch(`${API}/api/users/${userId}/activity`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify({ lastActiveAt: now, lastDashboardViewed: dashboardTitle })
+          });
+        } catch (e) {
+          console.error("Failed to update user activity on backend", e);
+        }
+      }
+    },
     createUser: async (u: User) => {
       // Optimistic update
       const tempId = Date.now().toString();
